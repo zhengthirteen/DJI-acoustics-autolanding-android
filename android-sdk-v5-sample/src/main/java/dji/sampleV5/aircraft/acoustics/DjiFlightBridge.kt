@@ -85,18 +85,18 @@ class DjiFlightBridge(private val onFault: (String) -> Unit, private val onChang
     }
 
     fun telemetry(targetLatitude: Double?, targetLongitude: Double?): AcousticLandingController.Telemetry {
-        val location = keys.getValue(KeyTools.createKey(FlightControllerKey.KeyAircraftLocation3D))
+        val hasTarget = targetLatitude != null && targetLongitude != null
+        val location = if (hasTarget) keys.getValue(KeyTools.createKey(FlightControllerKey.KeyAircraftLocation3D)) else null
         val yaw = keys.getValue(KeyTools.createKey(FlightControllerKey.KeyAircraftAttitude))?.yaw ?: Double.NaN
         val altitude = keys.getValue(KeyTools.createKey(FlightControllerKey.KeyAltitude)) ?: Double.NaN
         val connected = keys.getValue(KeyTools.createKey(FlightControllerKey.KeyConnection), false)
         val flying = keys.getValue(KeyTools.createKey(FlightControllerKey.KeyIsFlying), false)
-        val gps = keys.getValue(KeyTools.createKey(FlightControllerKey.KeyGPSSignalLevel))
+        val gps = if (hasTarget) keys.getValue(KeyTools.createKey(FlightControllerKey.KeyGPSSignalLevel)) else null
         val latitude = location?.latitude ?: Double.NaN
         val longitude = location?.longitude ?: Double.NaN
         val goodGps = gps == GPSSignalLevel.LEVEL_4 || gps == GPSSignalLevel.LEVEL_5 || gps == GPSSignalLevel.LEVEL_10
         val valid = goodGps && AcousticLandingController.validCoordinate(latitude, longitude) &&
                 !(latitude == 0.0 && longitude == 0.0)
-        val hasTarget = targetLatitude != null && targetLongitude != null
         val offset = if (valid && hasTarget)
             AcousticLandingController.relativePosition(latitude, longitude, targetLatitude!!, targetLongitude!!)
             else doubleArrayOf(Double.NaN, Double.NaN)

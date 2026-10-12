@@ -45,7 +45,7 @@ class AcousticLandingActivity : AppCompatActivity() {
     private var liveSession = false
     private var targetLatitude: Double? = null
     private var targetLongitude: Double? = null
-    private var simNorth = -4.0
+    private var simNorth = 0.0
     private var simEast = 0.0
     private var simHeight = 4.0
     private var simYaw = 0.0
@@ -55,8 +55,10 @@ class AcousticLandingActivity : AppCompatActivity() {
     private var log: PrintWriter? = null
     private var logPath = ""
     private var registerStatus = "初始化中"
-    private var message = "默认模拟：无人机位于目标南侧 4 m、高 4 m；目标位于原点。"
+    private var message = "默认无 GPS 模拟：已在目标上方、高 4 m，WAIT 队列悬停；到达需人工确认。"
     private val editable = mutableListOf<View>()
+    private val positionSettings = mutableListOf<View>()
+    private val gpsSettings = mutableListOf<View>()
     private lateinit var live: CheckBox
     private lateinit var arrival: Spinner
     private lateinit var bearings: EditText
@@ -101,19 +103,23 @@ class AcousticLandingActivity : AppCompatActivity() {
         val scroll = ScrollView(this).apply { addView(settings) }
         root.addView(scroll, LinearLayout.LayoutParams(0, -1, 1f))
         fun label(text: String) = TextView(this).apply { this.text = text; textSize = 15f; settings.addView(this) }
-        fun field(title: String, key: String, default: String, numeric: Boolean = false): EditText {
-            label(title)
+        fun field(title: String, key: String, default: String, numeric: Boolean = false,
+                  group: MutableList<View>? = null): EditText {
+            val caption = label(title)
+            group?.add(caption)
             return EditText(this).apply {
                 setText(prefs.getString(key, default))
                 inputType = if (numeric) InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or
                         InputType.TYPE_NUMBER_FLAG_SIGNED else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 settings.addView(this)
                 editable.add(this)
+                group?.add(this)
             }
         }
         label("声学自主降落 · 第一阶段").textSize = 22f
+        label("无 GPS：先人工飞到目标上方；模拟方向测试控制响应，到达由操作员确认。")
         label("偏离角：目标 → 无人机，北 0° / 东 90°；控制器沿反方向修正。每 500 ms 一个采样。")
-        live = CheckBox(this).apply { text = "实机发送（默认关闭；需先人工起飞）"; settings.addView(this) }
+        live = CheckBox(this).apply { text = "实机发送（默认关闭；先人工飞到目标上方）"; settings.addView(this) }
         editable.add(live)
         live.setOnCheckedChangeListener { _, checked ->
             if (checked && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) !=
@@ -132,13 +138,20 @@ class AcousticLandingActivity : AppCompatActivity() {
             adapter = ArrayAdapter(this@AcousticLandingActivity, android.R.layout.simple_spinner_dropdown_item,
                 listOf("位置判据：模拟位置 / 实机 GPS", "人工确认：已到目标正上方"))
             settings.addView(this)
+            setSelection(1)
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    if (::status.isInitialized) render()
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
         }
         editable.add(arrival)
-        bearings = field("方向队列（角度、WAIT；180*40 表示重复 40 次）", "queue", "180*40")
+        bearings = field("方向队列（默认 WAIT*120 悬停；可编辑角度测试移动）", "queue_no_gps_v1", "WAIT*120")
         speed = field("水平速度 m/s（0.05–0.5）", "speed", "0.3", true)
-        radius = field("到达半径 m（0.5–3；GPS 不保证此精度）", "radius", "0.8", true)
-        latitude = field("实机目标纬度 WGS84（位置判据必填）", "latitude", "", true)
-        longitude = field("实机目标经度 WGS84（位置判据必填）", "longitude", "", true)
+        radius = field("到达半径 m（0.5–3；GPS 不保证此精度）", "radius", "0.8", true, positionSettings)
+        latitude = field("实机目标纬度 WGS84（位置判据必填）", "latitude", "", true, gpsSettings)
+        longitude = field("实机目标经度 WGS84（位置判据必填）", "longitude", "", true, gpsSettings)
         yaw = field("模拟机头方向 °（实机使用航向遥测）", "yaw", "0", true)
         start = Button(this).apply { settings.addView(this); setOnClickListener { begin() } }
         arrived = Button(this).apply {
@@ -181,8 +194,9 @@ class AcousticLandingActivity : AppCompatActivity() {
         if (active) return
         try {
             check(bridge?.busy != true) { "上一条 DJI 指令仍在处理，请等待；必要时遥控器接管" }
-            val config = Config(if (arrival.selectedItemPosition == 0) ArrivalMode.POSITION else ArrivalMode.OPERATOR,
-                speed.text.toString().toDouble(), radius.text.toString().toDouble())
+            val arrivalMode = if (arrival.selectedItemPosition == 0) ArrivalMode.POSITION else ArrivalMode.OPERATOR
+            val config = Config(arrivalMode, speed.text.toString().toDouble(),
+                if (arrivalMode == ArrivalMode.POSITION) radius.text.toString().toDouble() else 0.8)
             val source = DirectionQueue.parse(bearings.text.toString())
             liveSession = live.isChecked
             targetLatitude = null
@@ -202,7 +216,8 @@ class AcousticLandingActivity : AppCompatActivity() {
             require(simYaw.isFinite()) { "模拟航向必须为有限角度" }
             queue = source
             controller = AcousticLandingController(config)
-            simNorth = -4.0; simEast = 0.0; simHeight = 4.0
+            simNorth = if (config.arrivalMode == ArrivalMode.POSITION) -4.0 else 0.0
+            simEast = 0.0; simHeight = 4.0
             lastBearing = null; lastCommand = Command.ZERO; landingTransfer = false
             plot.reset()
             val now = SystemClock.elapsedRealtime()
@@ -345,7 +360,7 @@ class AcousticLandingActivity : AppCompatActivity() {
 
     private fun saveSettings() {
         getPreferences(MODE_PRIVATE).edit().apply {
-            putString("queue", bearings.text.toString()); putString("speed", speed.text.toString())
+            putString("queue_no_gps_v1", bearings.text.toString()); putString("speed", speed.text.toString())
             putString("radius", radius.text.toString()); putString("latitude", latitude.text.toString())
             putString("longitude", longitude.text.toString()); putString("yaw", yaw.text.toString())
         }.apply()
@@ -355,12 +370,19 @@ class AcousticLandingActivity : AppCompatActivity() {
         start.text = if (live.isChecked) "启动实机控制（当前模拟方向队列）" else "启动模拟实验"
         start.isEnabled = !active
         editable.forEach { it.isEnabled = !active }
+        val positionMode = arrival.selectedItemPosition == 0
+        positionSettings.forEach { it.visibility = if (positionMode) View.VISIBLE else View.GONE }
+        gpsSettings.forEach { it.visibility = if (positionMode && live.isChecked) View.VISIBLE else View.GONE }
         stop.isEnabled = active || bridge?.busy == true
         arrived.isEnabled = active && !acquiring && controller?.isNavigating == true &&
                 controller?.config?.arrivalMode == ArrivalMode.OPERATOR
         confirm.isEnabled = active && liveSession && controller?.state() == State.LANDING && bridge?.confirmationNeeded == true
-        val position = telemetry?.let { "位置 N/E：%.2f / %.2f m\n相对高度：%.2f m\n距离判据：%.2f m\n".format(
-            it.north, it.east, it.altitude, hypot(it.north, it.east)) } ?: ""
+        val position = telemetry?.let {
+            if (liveSession && controller?.config?.arrivalMode == ArrivalMode.OPERATOR)
+                "位置：无 GPS；到达由操作员确认\n相对高度：%.2f m\n航向：%.1f°\n".format(it.altitude, it.yaw)
+            else "${if (liveSession) "位置" else "模拟位置"} N/E：%.2f / %.2f m\n相对高度：%.2f m\n距离：%.2f m\n".format(
+                it.north, it.east, it.altitude, hypot(it.north, it.east))
+        } ?: ""
         status.text = "${if (active && liveSession) "实机控制流程中" else if (active) "模拟中" else if (bridge?.busy == true)
             "已停止发送；DJI 指令仍在处理，请留意遥控器接管" else "未控制无人机"}\n" +
                 "SDK：$registerStatus\n状态：${controller?.state() ?: State.IDLE}\n$message\n" + position +

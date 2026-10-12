@@ -146,6 +146,20 @@ public final class AcousticControllerTest {
         check(c.state() == State.LANDING_REQUESTED, "Manual confirmation did not lead to landing request");
         scenarios++;
 
+        // Default no-GPS workflow: WAIT holds position until the operator explicitly confirms arrival.
+        c = controller(ArrivalMode.OPERATOR);
+        q = DirectionQueue.parse("WAIT*120");
+        for (long now = 0; now <= 8000; now += 100) {
+            if (now % 500 == 0) c.acceptBearing(q.next(), now, now);
+            if (now == 6000) c.confirmOperatorArrival();
+            command = c.tick(now, new Telemetry(Double.NaN, Double.NaN, 4, 0, true, true, false, now));
+            check(command.magnitude() == 0, "Default no-GPS workflow issued horizontal movement");
+            if (now < 6000) check(c.state() == State.ALIGNING, "Default no-GPS workflow inferred arrival");
+            if (now >= 6000 && now < 8000) check(c.state() == State.HOLDING, "Manual hover dwell failed");
+        }
+        check(c.state() == State.LANDING_REQUESTED, "No-GPS WAIT workflow failed to request landing after confirmation");
+        scenarios++;
+
         double[] offset = AcousticLandingController.relativePosition(31.00001, 121, 31, 121);
         check(offset[0] > 1.11 && offset[0] < 1.12 && offset[1] == 0, "WGS84 offset conversion");
         scenarios++;
@@ -159,7 +173,7 @@ public final class AcousticControllerTest {
         check(c.state() == State.ABORTED && c.reason().contains("15 米"), "Commanded travel budget failed");
         scenarios++;
 
-        System.out.println("PASS: " + scenarios + " acoustic control scenarios; default approach requested landing at " +
+        System.out.println("PASS: " + scenarios + " acoustic control scenarios; position demo requested landing at " +
             landedAt + " ms.");
     }
 }
