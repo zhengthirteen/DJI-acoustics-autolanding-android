@@ -57,6 +57,8 @@ flight_logs/
 artifacts/
 
 # Local recordings and thesis documents
+recordings/
+audio_recordings/
 *.mp4
 *.MP4
 *.mov
