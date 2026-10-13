@@ -17,7 +17,7 @@
 
 ## 实机连接和低速验证
 
-1. 在 `secrets.properties` 配置新包名 `com.zheng13.acousticslanding` 对应的 DJI API Key。连接 Mini 4 Pro、RC-N2 和 Android 手机，检查 SDK 注册状态；排查时进入 DJI 诊断页面。
+1. 按 [DJI API Key 配置指南](api-key-setup.md) 在 `secrets.properties` 配置匹配的 `APPLICATION_ID` 与 `AIRCRAFT_API_KEY`，重新构建并安装。默认包名为 `com.zheng13.acousticslanding`；本机复用原 Key 时为 `com.zheng13.gradproject`。连接 Mini 4 Pro、RC-N2 和 Android 手机，检查 SDK 注册状态；排查时进入 DJI 诊断页面。
 2. 先验证遥测与停止按钮，再在受控环境验证 BODY 速度轴的正负方向、机头朝向变化和控制权交接。模拟队列是开环预设序列，不能视为完成的声学跟踪。
 3. 现场无 GPS，由操作员人工起飞并飞到预定降落点正上方。控制要求相对起飞点高度 2–15 m；确认遥控器能随时接管。
 4. 保持默认“人工确认”判据和 `WAIT*120`；无需目标经纬度或飞机 GPS 信号。先用悬停队列验证完整链路。
@@ -34,7 +34,7 @@
 
 ## 日志
 
-每次启动新建 CSV，状态面板显示文件路径。通常位于：
+每次启动新建 CSV，状态面板显示文件路径。默认包名时位于：
 
 ```text
 /sdcard/Android/data/com.zheng13.acousticslanding/files/experiments/
@@ -45,6 +45,8 @@
 ```bash
 adb pull /sdcard/Android/data/com.zheng13.acousticslanding/files/experiments ./experiments
 ```
+
+复用旧 Key 并使用 `APPLICATION_ID=com.zheng13.gradproject` 时，日志目录改为 `/sdcard/Android/data/com.zheng13.gradproject/files/experiments/`；导出命令也使用这个包名。以应用状态面板显示的实际路径为准。
 
 `simulation_` 和 `live_` 前缀区分模式。记录方向、状态、北/东位置、相对高度、航向、速度命令和已消费采样数；人工无定位模式的位置列为 NaN，不能推断实际落点。文件头记录模拟队列与 GPS 目标。日志可能含场地坐标，默认不入 Git。
 

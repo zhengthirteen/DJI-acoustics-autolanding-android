@@ -11,12 +11,13 @@ android {
     compileSdkVersion Integer.parseInt(project.ANDROID_COMPILE_SDK_VERSION)
 
     defaultConfig {
-        applicationId "com.zheng13.acousticslanding"
+        // A local override can keep the package registered with an existing DJI App Key.
+        applicationId privateProperties.getProperty("APPLICATION_ID", "com.zheng13.acousticslanding").trim()
         minSdkVersion Integer.parseInt(project.ANDROID_MIN_SDK_VERSION)
         targetSdkVersion Integer.parseInt(project.ANDROID_TARGET_SDK_VERSION)
         versionCode 1
         versionName "1.0"
-        manifestPlaceholders["API_KEY"] = privateProperties.getProperty("AIRCRAFT_API_KEY", "")
+        manifestPlaceholders["API_KEY"] = privateProperties.getProperty("AIRCRAFT_API_KEY", "").trim()
         manifestPlaceholders["GMAP_API_KEY"] = privateProperties.getProperty("GMAP_API_KEY", "")
         manifestPlaceholders["MAPLIBRE_TOKEN"] = privateProperties.getProperty("MAPLIBRE_TOKEN", "")
         ndk {

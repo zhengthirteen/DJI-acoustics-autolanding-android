@@ -27,13 +27,15 @@ Android Studio **打开 `android-sdk-v5-as/`**，不是仓库根目录。
 
 ```bash
 cd android-sdk-v5-as
-cp secrets.properties.example secrets.properties
-# 编辑 secrets.properties；为 com.zheng13.acousticslanding 配置自己的 DJI API Key
+cp -n secrets.properties.example secrets.properties
+# 编辑 secrets.properties；APPLICATION_ID 必须与 DJI Key 登记的 Package Name 一致
 # Android Studio 会生成本机 local.properties；命令行也可通过 ANDROID_HOME 指向 SDK
 ./gradlew :sample:assembleDebug
 ```
 
-纯模拟不要求 DJI 注册成功。连接实机前必须配置新包名对应的 DJI API Key。新包名为 `com.zheng13.acousticslanding`，可与原视觉应用并存。`secrets.properties` 和 `local.properties` 已忽略；没有继续使用原仓库中的 API Key 和签名密码。Debug 使用自动生成的 Android debug keystore，Release 签名可在本地配置。
+纯模拟不要求 DJI 注册成功。连接实机前必须配置与实际 `applicationId` 匹配的 DJI API Key。仓库默认包名为 `com.zheng13.acousticslanding`，配置它对应的新 Key 后可与原视觉应用并存。也可在本机 `secrets.properties` 将 `APPLICATION_ID` 设为 `com.zheng13.gradproject`，复用原项目对应的 Key；此时两个 App 不能同时安装在同一 Android 用户空间。新仓库与原目录仍保持独立。
+
+`secrets.properties` 和 `local.properties` 已忽略，Key 和签名密码不进入 Git。Debug 使用自动生成的 Android debug keystore；若原视觉 App 使用不同签名，本次 APK 无法直接覆盖它。查找旧 Key、复用配置、新 Key 申请、安装冲突和注册检查见 [DJI API Key 配置指南](docs/api-key-setup.md)。
 
 APK 输出：`android-sdk-v5-sample/build/outputs/apk/debug/sample-debug.apk`。DJI SDK 使 APK 较大，编译结果不纳入 Git。
 
