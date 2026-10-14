@@ -1,11 +1,8 @@
 package dji.sampleV5.aircraft.acoustics
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -14,9 +11,9 @@ import android.text.InputType
 import android.view.View
 import android.view.WindowManager
 import android.widget.*
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import dji.sampleV5.aircraft.DJIAircraftMainActivity
 import dji.sampleV5.aircraft.acoustics.core.AcousticLandingController
 import dji.sampleV5.aircraft.acoustics.core.AcousticLandingController.*
 import dji.sampleV5.aircraft.acoustics.core.DirectionQueue
@@ -27,59 +24,57 @@ import java.io.PrintWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.hypot
 import kotlin.math.max
 
 class AcousticLandingActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private val sdk: MSDKManagerVM by globalViewModels()
     private var bridge: DjiFlightBridge? = null
-    private var controller: AcousticLandingController? = null
-    private var queue: DirectionQueue? = null
+    private var simulation: AcousticLandingController? = null
+    private var shown = DjiFlightBridge.Snapshot()
     private var active = false
-    private var acquiring = false
-    private var pendingAt = 0L
-    private var nextDirectionAt = 0L
-    private var landingTransfer = false
-    private var landingRequestedAt = 0L
+    private var foreground = false
     private var liveSession = false
-    private var targetLatitude: Double? = null
-    private var targetLongitude: Double? = null
+    private var session = 0L
+    private var dialog: AlertDialog? = null
+    private var lastTick = 0L
     private var simNorth = 0.0
     private var simEast = 0.0
     private var simHeight = 4.0
     private var simYaw = 0.0
-    private var lastTick = 0L
-    private var lastBearing: Double? = null
-    private var lastCommand = Command.ZERO
+    private var simCommand = Command.ZERO
     private var log: PrintWriter? = null
-    private var logPath = ""
+    private var logPath = "尚无日志"
     private var registerStatus = "初始化中"
-    private var message = "默认无 GPS 模拟：已在目标上方、高 4 m，WAIT 队列悬停；到达需人工确认。"
+    private var message = "先设置队列，再人工起飞和定位，最后点击启动；队列结束只悬停。"
     private val editable = mutableListOf<View>()
-    private val positionSettings = mutableListOf<View>()
-    private val gpsSettings = mutableListOf<View>()
     private lateinit var live: CheckBox
-    private lateinit var arrival: Spinner
     private lateinit var bearings: EditText
     private lateinit var speed: EditText
-    private lateinit var radius: EditText
-    private lateinit var latitude: EditText
-    private lateinit var longitude: EditText
     private lateinit var yaw: EditText
     private lateinit var start: Button
-    private lateinit var stop: Button
-    private lateinit var arrived: Button
+    private lateinit var land: Button
     private lateinit var confirm: Button
     private lateinit var status: TextView
-    private lateinit var plot: PositionPlot
 
     private val ticker = object : Runnable {
         override fun run() {
-            if (!active) return
-            try { step(SystemClock.elapsedRealtime()) }
-            catch (error: Exception) { fault("控制停止：${error.message}") }
-            if (active) handler.postDelayed(this, 100)
+            if (!foreground) return
+            try {
+                val now = SystemClock.elapsedRealtime()
+                if (active && liveSession) {
+                    bridge?.heartbeat(session)
+                    val next = bridge!!.snapshot
+                    if (next.session == session) {
+                        shown = next
+                        if (!next.busy) finishRun()
+                    }
+                } else if (active) stepSimulation(now)
+                else if (live.isChecked || bridge?.busy == true) shown = bridge?.snapshot ?: shown
+                if (active) writeLog(now)
+                render()
+            } catch (error: Exception) { stop("界面/日志异常：${error.message}") }
+            if (foreground) handler.postDelayed(this, 100)
         }
     }
 
@@ -92,348 +87,205 @@ class AcousticLandingActivity : AppCompatActivity() {
         }
         render()
     }
-
+    private fun adapter(): DjiFlightBridge = bridge ?: DjiFlightBridge().also { bridge = it; it.observe() }
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private fun buildUi() {
         val prefs = getPreferences(MODE_PRIVATE)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(18, 12, 18, 12)
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), dp(8), dp(10), dp(8)) }
+        // Always visible: these controls never sit inside the scrolling settings panel.
+        val emergency = Button(this).apply {
+            text = "紧急制动（停止序列 / 取消本次降落）"; textSize = 18f
+            setBackgroundColor(Color.rgb(180, 24, 24)); setTextColor(Color.WHITE)
+            minHeight = dp(60); setOnClickListener { stop("人工紧急制动；停止队列并交还遥控器") }
         }
-        val settings = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 20, 0) }
-        val scroll = ScrollView(this).apply { addView(settings) }
-        root.addView(scroll, LinearLayout.LayoutParams(0, -1, 1f))
+        root.addView(emergency, LinearLayout.LayoutParams(-1, dp(64)))
+        val body = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        root.addView(body, LinearLayout.LayoutParams(-1, 0, 1f))
+        val settings = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, dp(16), 0) }
+        body.addView(ScrollView(this).apply { addView(settings) }, LinearLayout.LayoutParams(0, -1, 1f))
         fun label(text: String) = TextView(this).apply { this.text = text; textSize = 15f; settings.addView(this) }
-        fun field(title: String, key: String, default: String, numeric: Boolean = false,
-                  group: MutableList<View>? = null): EditText {
-            val caption = label(title)
-            group?.add(caption)
-            return EditText(this).apply {
-                setText(prefs.getString(key, default))
-                inputType = if (numeric) InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or
-                        InputType.TYPE_NUMBER_FLAG_SIGNED else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                settings.addView(this)
-                editable.add(this)
-                group?.add(this)
-            }
+        fun field(title: String, key: String, default: String, numeric: Boolean = false) = EditText(this).apply {
+            label(title); setText(prefs.getString(key, default))
+            inputType = if (numeric) InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
+                else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            settings.addView(this); editable.add(this)
         }
-        label("声学自主降落 · 第一阶段").textSize = 22f
-        label("无 GPS：先人工飞到目标上方；模拟方向测试控制响应，到达由操作员确认。")
-        label("偏离角：目标 → 无人机，北 0° / 东 90°；控制器沿反方向修正。每 500 ms 一个采样。")
-        live = CheckBox(this).apply { text = "实机发送（默认关闭；先人工飞到目标上方）"; settings.addView(this) }
+        label("声学方向序列实验 · 人工决定降落").textSize = 20f
+        label("偏离角为目标→无人机：0→向南，90→向西，180→向北，270→向东；WAIT→悬停。每项 0.5 秒。")
+        live = CheckBox(this).apply { text = "实机模式（每次进入默认关闭）"; settings.addView(this) }
         editable.add(live)
         live.setOnCheckedChangeListener { _, checked ->
-            if (checked && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) !=
-                PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this,
-                    arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 31)
+            if (checked) {
+                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+                    ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 31)
+                adapter().observe()
             }
-            if (checked) runCatching {
-                val adapter = bridge ?: DjiFlightBridge(::fault) { render() }.also { bridge = it }
-                adapter.observe()
-            }.onFailure { message = "等待 DJI 初始化：${it.message}" }
             render()
         }
-        label("到达判据")
-        arrival = Spinner(this).apply {
-            adapter = ArrayAdapter(this@AcousticLandingActivity, android.R.layout.simple_spinner_dropdown_item,
-                listOf("位置判据：模拟位置 / 实机 GPS", "人工确认：已到目标正上方"))
-            settings.addView(this)
-            setSelection(1)
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    if (::status.isInitialized) render()
-                }
-                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-            }
+        bearings = field("方向队列（最多 120 项 / 60 秒）", "queue_manual_v2", "WAIT*20")
+        speed = field("水平速度 m/s（0.05–0.3；首次用 0.1）", "speed_manual_v2", "0.1", true)
+        yaw = field("本地模拟机头角度 °（实机自动读取航向）", "yaw_manual_v2", "0", true)
+        Button(this).apply {
+            text = "检查并保存队列"; settings.addView(this); editable.add(this)
+            setOnClickListener { runCatching {
+                val c = configuredController(); saveSettings()
+                message = "队列已保存：${c.total()} 项，${c.total() * 0.5} 秒；结束后只悬停。"; render()
+            }.onFailure { toast(it.message ?: "队列无效") } }
         }
-        editable.add(arrival)
-        bearings = field("方向队列（默认 WAIT*120 悬停；可编辑角度测试移动）", "queue_no_gps_v1", "WAIT*120")
-        speed = field("水平速度 m/s（0.05–0.5）", "speed", "0.3", true)
-        radius = field("到达半径 m（0.5–3；GPS 不保证此精度）", "radius", "0.8", true, positionSettings)
-        latitude = field("实机目标纬度 WGS84（位置判据必填）", "latitude", "", true, gpsSettings)
-        longitude = field("实机目标经度 WGS84（位置判据必填）", "longitude", "", true, gpsSettings)
-        yaw = field("模拟机头方向 °（实机使用航向遥测）", "yaw", "0", true)
-        start = Button(this).apply { settings.addView(this); setOnClickListener { begin() } }
-        arrived = Button(this).apply {
-            text = "确认已到目标正上方"
-            settings.addView(this)
-            setOnClickListener {
-                runCatching { controller?.confirmOperatorArrival() }.onFailure { toast(it.message ?: "确认失败") }
-            }
+        start = Button(this).apply { settings.addView(this); setOnClickListener { prepareStart() } }
+        land = Button(this).apply {
+            text = "人工申请降落…"; settings.addView(this)
+            setOnClickListener { showConfirmation("确认降落", "请目视确认无人机正下方是可降落区域，且人员已离开。确定后将启动 DJI 自动降落。") {
+                if (liveSession) bridge?.requestLanding(session)
+                else runCatching { simulation?.requestLanding(SystemClock.elapsedRealtime(), simTelemetry(SystemClock.elapsedRealtime())) }
+                    .onFailure { stop("降落未执行：${it.message}") }
+            } }
         }
         confirm = Button(this).apply {
-            text = "确认 DJI 最终降落"
-            settings.addView(this)
-            setOnClickListener { runCatching { bridge?.confirmLanding() }.onFailure { fault(it.message ?: "确认失败") } }
-        }
-        stop = Button(this).apply {
-            text = "停止 / 取消降落 / 交还遥控器"
-            setTextColor(Color.RED)
-            settings.addView(this)
-            setOnClickListener {
-                if (!active && bridge?.busy == true) runCatching { bridge?.stop() }
-                fault("操作员停止实验")
-            }
+            text = "DJI 要求最终降落确认…"; settings.addView(this)
+            setOnClickListener { showConfirmation("最终降落确认", "飞控要求再次确认。确认实际落区安全后才继续；不确定时取消并使用遥控器。") {
+                bridge?.confirmLanding(session)
+            } }
         }
         Button(this).apply {
-            text = "DJI 注册与连接诊断"
-            settings.addView(this)
-            editable.add(this)
-            setOnClickListener { startActivity(Intent(this@AcousticLandingActivity, DJIAircraftMainActivity::class.java)) }
+            text = "结束控制 / 交还遥控器"; settings.addView(this)
+            setOnClickListener { stop("人工结束控制，请接管遥控器") }
         }
-        val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(results, LinearLayout.LayoutParams(0, -1, 1f))
-        status = TextView(this).apply { textSize = 16f }
-        val statusScroll = ScrollView(this).apply { addView(status) }
-        results.addView(statusScroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        plot = PositionPlot().apply { results.addView(this, LinearLayout.LayoutParams(-1, 0, 1f)) }
+        Button(this).apply {
+            text = "DJI 注册与连接状态（只读）"; settings.addView(this); editable.add(this)
+            setOnClickListener {
+                adapter().observe()
+                dialog = AlertDialog.Builder(this@AcousticLandingActivity).setTitle("DJI 状态（只读）")
+                    .setMessage("SDK：$registerStatus\n${status.text}\n若数据尚未更新，请关闭后等几秒重试。")
+                    .setPositiveButton("关闭", null).show()
+            }
+        }
+        label("无 GPS 时必须有可用下视定位。不能遮挡下视/避障传感器。零速度不保证无漂移；遥控器须随时可接管。")
+        status = TextView(this).apply { textSize = 16f; setPadding(dp(6), dp(6), 0, 0) }
+        body.addView(ScrollView(this).apply { addView(status) }, LinearLayout.LayoutParams(0, -1, 1f))
         setContentView(root)
     }
-
-    private fun begin() {
-        if (active) return
+    private fun configuredController() = AcousticLandingController(Config(speed.text.toString().toDouble()), DirectionQueue.parse(bearings.text.toString()))
+    private fun prepareStart() {
+        if (active || bridge?.busy == true) return
+        runCatching {
+            val c = configuredController()
+            if (live.isChecked) {
+                check(sdk.lvRegisterState.value?.first == true) { "DJI SDK 尚未注册成功" }
+                check(ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) { "请先授予手机精确位置权限" }
+                check(adapter().snapshot.canStart) { "先手动起飞、定位并稳定悬停，等待有效遥测；请查看右侧状态" }
+                showConfirmation("开始实机序列", "确认已手动飞到目标上方并稳定悬停，遥控器摇杆回中。\n${c.total()} 项 / ${c.total() * 0.5} 秒，速度 ${c.config.speed} m/s。\n程序会按预设角度移动，结束后只悬停；不判断是否到达目标。") { begin(c, true) }
+            } else begin(c, false)
+        }.onFailure { toast(it.message ?: "无法启动") }
+    }
+    private fun begin(c: AcousticLandingController, real: Boolean) {
+        if (!foreground || active) return
         try {
-            check(bridge?.busy != true) { "上一条 DJI 指令仍在处理，请等待；必要时遥控器接管" }
-            val arrivalMode = if (arrival.selectedItemPosition == 0) ArrivalMode.POSITION else ArrivalMode.OPERATOR
-            val config = Config(arrivalMode, speed.text.toString().toDouble(),
-                if (arrivalMode == ArrivalMode.POSITION) radius.text.toString().toDouble() else 0.8)
-            val source = DirectionQueue.parse(bearings.text.toString())
-            liveSession = live.isChecked
-            targetLatitude = null
-            targetLongitude = null
-            if (liveSession) {
-                check(sdk.lvRegisterState.value?.first == true) { "DJI SDK 尚未注册成功，请配置 API Key 并连接遥控器" }
-                check(ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
-                    PackageManager.PERMISSION_GRANTED) { "请先授予精确位置权限" }
-                if (config.arrivalMode == ArrivalMode.POSITION) {
-                    targetLatitude = latitude.text.toString().toDouble()
-                    targetLongitude = longitude.text.toString().toDouble()
-                    require(AcousticLandingController.validCoordinate(targetLatitude!!, targetLongitude!!) &&
-                        !(targetLatitude == 0.0 && targetLongitude == 0.0)) { "请填写实际目标经纬度" }
-                }
+            saveSettings(); liveSession = real
+            if (!real) {
+                val angle = yaw.text.toString().toDouble(); require(angle.isFinite()) { "模拟航向必须为有限数值" }
+                simYaw = DirectionQueue.normalize(angle + 180) - 180
+                simNorth = 0.0; simEast = 0.0; simHeight = 4.0; simCommand = Command.ZERO
+                simulation = c; c.start(SystemClock.elapsedRealtime(), simTelemetry(SystemClock.elapsedRealtime()))
             }
-            simYaw = yaw.text.toString().toDouble()
-            require(simYaw.isFinite()) { "模拟航向必须为有限角度" }
-            queue = source
-            controller = AcousticLandingController(config)
-            simNorth = if (config.arrivalMode == ArrivalMode.POSITION) -4.0 else 0.0
-            simEast = 0.0; simHeight = 4.0
-            lastBearing = null; lastCommand = Command.ZERO; landingTransfer = false
-            plot.reset()
-            val now = SystemClock.elapsedRealtime()
-            if (liveSession) {
-                val adapter = bridge ?: DjiFlightBridge(::fault) { render() }.also { bridge = it }
-                adapter.observe()
-                // Validate using the same guards as the runtime loop before acquiring authority.
-                val preflight = AcousticLandingController(config)
-                preflight.start(now)
-                preflight.tick(now, adapter.telemetry(targetLatitude, targetLongitude))
-                check(preflight.state() != State.ABORTED) { preflight.reason() }
-            }
-            saveSettings()
-            openLog()
-            active = true
+            openLog(c); active = true; lastTick = SystemClock.elapsedRealtime()
+            shown = DjiFlightBridge.Snapshot(detail = "正在启动…", busy = true, total = c.total())
+            if (real) session = adapter().start(c)
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            if (liveSession) {
-                acquiring = true
-                pendingAt = now
-                message = "申请虚拟摇杆，等待确认控制权"
-                bridge!!.acquire { if (active && acquiring) startController() }
-            } else startController()
+            message = "正在执行实验"
             render()
-            handler.post(ticker)
-        } catch (error: Exception) {
-            if (active) fault(error.message ?: "启动失败") else {
-                controller = null
-                message = "未启动：${error.message}"
-                toast(message)
-                render()
-            }
-        }
+        } catch (error: Exception) { stop("启动失败：${error.message}") }
     }
-
-    private fun startController() {
-        acquiring = false
-        val now = SystemClock.elapsedRealtime()
-        controller!!.start(now)
-        nextDirectionAt = now
+    private fun simTelemetry(now: Long) = Telemetry(simHeight, simYaw, simCommand.magnitude(), 0.0,
+        true, simHeight > 0, simHeight > 0, true, true, 100, now)
+    private fun stepSimulation(now: Long) {
+        val c = simulation ?: return
+        val dt = if (now - lastTick <= AcousticLandingController.MAX_TICK_GAP_MS) (now - lastTick) / 1000.0 else 0.0
+        simNorth += simCommand.north * dt; simEast += simCommand.east * dt
+        if (c.state() == State.LANDING) simHeight = max(0.0, simHeight - 0.5 * dt)
+        val t = simTelemetry(now)
+        simCommand = c.tick(now, t)
+        if (c.state() == State.LANDING_REQUESTED) c.landingAccepted()
+        shown = DjiFlightBridge.Snapshot(c.state(), c.reason(), c.state() != State.ABORTED && c.state() != State.COMPLETE,
+            false, c.canRequestLanding(now), false, t, "LOCAL_SIMULATION", c.consumed(), c.total(), c.bearing(), simCommand,
+            c.initialAltitude(), c.commandedPath(), now)
         lastTick = now
+        if (!shown.busy) finishRun()
     }
-
-    private fun step(now: Long) {
-        val c = controller ?: return
-        if (acquiring) {
-            if (now - pendingAt > 5000) fault("获取控制权超过 5 秒；请检查连接并遥控器接管")
-            render()
-            return
-        }
-        val telemetry = if (liveSession) bridge!!.telemetry(targetLatitude, targetLongitude) else
-            Telemetry(simNorth, simEast, simHeight, simYaw, true, simHeight > 0, true, now)
-        if (c.isNavigating && now >= nextDirectionAt) {
-            if (now - nextDirectionAt >= DirectionQueue.PERIOD_MS) {
-                fault("方向调度延迟超过 500 ms，停止实验")
-                return
+    private fun showConfirmation(title: String, detail: String, action: () -> Unit) {
+        dialog?.dismiss()
+        dialog = AlertDialog.Builder(this).setTitle(title).setMessage(detail).setNegativeButton("取消", null)
+            .setNeutralButton("紧急制动") { _, _ -> stop("人工紧急制动") }
+            .setPositiveButton("确认") { _, _ -> if (foreground) action() }.show().also {
+                it.getButton(AlertDialog.BUTTON_NEUTRAL).setTextColor(Color.RED)
             }
-            val source = queue!!
-            if (!source.hasNext()) { fault("方向队列结束，停止修正；队列结束不表示到达"); return }
-            lastBearing = source.next()
-            c.acceptBearing(lastBearing, now, now)
-            nextDirectionAt += DirectionQueue.PERIOD_MS
-        }
-        val command = c.tick(now, telemetry)
-        lastCommand = command
-        when (c.state()) {
-            State.ABORTED -> { fault(c.reason()); return }
-            State.LANDING_REQUESTED -> if (!landingTransfer) {
-                landingTransfer = true
-                landingRequestedAt = now
-                if (liveSession) bridge!!.startLanding { if (active) controller?.landingAccepted() }
-                else c.landingAccepted()
-            } else if (now - landingRequestedAt > 5000) {
-                fault("自动降落请求超过 5 秒未确认，请遥控器接管"); return
-            }
-            State.LANDING -> {
-                if (liveSession) {
-                    if (!telemetry.connected || now - telemetry.timestamp > c.config.staleMs) {
-                        fault("降落时连接或遥测丢失，请遥控器接管"); return
-                    }
-                    if (!telemetry.flying) { c.landed(); bridge!!.markLanded() }
-                } else {
-                    simHeight = max(0.0, simHeight - 0.5 * (now - lastTick) / 1000.0)
-                    if (simHeight == 0.0) c.landed()
-                }
-            }
-            State.ALIGNING, State.HOLDING -> {
-                if (liveSession) bridge!!.send(command, telemetry.yaw)
-                else {
-                    simNorth += command.north * (now - lastTick) / 1000.0
-                    simEast += command.east * (now - lastTick) / 1000.0
-                }
-            }
-            else -> Unit
-        }
-        log?.println(listOf(now, c.state(), lastBearing ?: "", telemetry.north, telemetry.east,
-            telemetry.altitude, telemetry.yaw, command.north, command.east, queue!!.consumed()).joinToString(","))
-        log?.flush()
-        plot.add(telemetry.north, telemetry.east, c.config.arrivalRadius)
-        lastTick = now
-        message = c.reason()
-        if (c.state() == State.COMPLETE) finishRun()
-        render(telemetry)
     }
-
-    private fun fault(detail: String) {
-        val wasActive = active
-        message = detail
-        controller?.abort(detail)
-        // Do not recursively retry failed release/cancel actions through onFault.
-        if (wasActive) {
-            active = false
-            acquiring = false
-            if (liveSession) runCatching { bridge?.stop() }
-            log?.println("# stopped: ${detail.replace('\n', ' ')}")
-            finishRun()
+    private fun stop(detail: String) {
+        // Invalidate the flight session before logging, rendering or dismissing any UI.
+        bridge?.emergencyStop(detail)
+        dialog?.dismiss(); dialog = null
+        message = detail; simCommand = Command.ZERO; simulation?.abort(detail)
+        log?.println("# stop_requested: ${detail.replace('\n', ' ')}")
+        log?.close(); log = null
+        if (!liveSession) shown = shown.copy(state = simulation?.state() ?: State.IDLE, detail = detail, command = Command.ZERO, busy = false, canLand = false)
+        if (active && liveSession && foreground && bridge?.busy == true) {
+            shown = shown.copy(detail = detail, canLand = false, confirmationNeeded = false)
+            render(); return
         }
-        if (::status.isInitialized) render()
+        finishRun(); render()
     }
-
     private fun finishRun() {
-        active = false
-        acquiring = false
-        handler.removeCallbacks(ticker)
-        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        log?.close()
-        log = null
+        active = false; window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        log?.println("# logger_closed; last_observed_state=${shown.state}; ${shown.detail.replace('\n', ' ')}")
+        log?.close(); log = null
     }
-
-    private fun openLog() {
+    private fun openLog(c: AcousticLandingController) {
         val folder = getExternalFilesDir("experiments") ?: File(filesDir, "experiments")
-        check(folder.exists() || folder.mkdirs()) { "无法创建实验日志目录" }
+        check(folder.exists() || folder.mkdirs()) { "无法创建日志目录" }
         val name = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.ROOT).format(Date())
         val file = File(folder, "${if (liveSession) "live" else "simulation"}_$name.csv")
-        log = PrintWriter(file)
-        logPath = file.absolutePath
-        log!!.println("# mode=${if (liveSession) "live" else "simulation"}; arrival=${controller!!.config.arrivalMode}")
-        log!!.println("# target_wgs84=$targetLatitude,$targetLongitude; queue=${bearings.text}")
-        log!!.println("monotonic_ms,state,deviation_deg,north_m,east_m,relative_altitude_m,yaw_deg,command_north_mps,command_east_mps,samples_consumed")
+        log = PrintWriter(file); logPath = file.absolutePath
+        log!!.println("# mode=${if (liveSession) "live" else "simulation"}; queue=${bearings.text.toString().replace('\n', ' ')}; speed=${c.config.speed}")
+        log!!.println("monotonic_ms,state,deviation_deg,relative_altitude_m,yaw_deg,command_north_mps,command_east_mps,measured_horizontal_mps,battery_percent,positioning,samples_consumed,commanded_path_m,sim_north_m,sim_east_m")
     }
-
-    private fun saveSettings() {
-        getPreferences(MODE_PRIVATE).edit().apply {
-            putString("queue_no_gps_v1", bearings.text.toString()); putString("speed", speed.text.toString())
-            putString("radius", radius.text.toString()); putString("latitude", latitude.text.toString())
-            putString("longitude", longitude.text.toString()); putString("yaw", yaw.text.toString())
-        }.apply()
+    private fun writeLog(now: Long) {
+        val t = shown.telemetry ?: return
+        log?.println(listOf(now, shown.state, shown.bearing ?: "", t.altitude, t.yaw, shown.command.north,
+            shown.command.east, t.horizontalSpeed, t.battery, t.positioning, shown.consumed, shown.commandedPath,
+            if (liveSession) "" else simNorth, if (liveSession) "" else simEast).joinToString(","))
+        if (log?.checkError() == true) error("实验日志写入失败")
     }
-
-    private fun render(telemetry: Telemetry? = null) {
-        start.text = if (live.isChecked) "启动实机控制（当前模拟方向队列）" else "启动模拟实验"
-        start.isEnabled = !active
-        editable.forEach { it.isEnabled = !active }
-        val positionMode = arrival.selectedItemPosition == 0
-        positionSettings.forEach { it.visibility = if (positionMode) View.VISIBLE else View.GONE }
-        gpsSettings.forEach { it.visibility = if (positionMode && live.isChecked) View.VISIBLE else View.GONE }
-        stop.isEnabled = active || bridge?.busy == true
-        arrived.isEnabled = active && !acquiring && controller?.isNavigating == true &&
-                controller?.config?.arrivalMode == ArrivalMode.OPERATOR
-        confirm.isEnabled = active && liveSession && controller?.state() == State.LANDING && bridge?.confirmationNeeded == true
-        val position = telemetry?.let {
-            if (liveSession && controller?.config?.arrivalMode == ArrivalMode.OPERATOR)
-                "位置：无 GPS；到达由操作员确认\n相对高度：%.2f m\n航向：%.1f°\n".format(it.altitude, it.yaw)
-            else "${if (liveSession) "位置" else "模拟位置"} N/E：%.2f / %.2f m\n相对高度：%.2f m\n距离：%.2f m\n".format(
-                it.north, it.east, it.altitude, hypot(it.north, it.east))
-        } ?: ""
-        status.text = "${if (active && liveSession) "实机控制流程中" else if (active) "模拟中" else if (bridge?.busy == true)
-            "已停止发送；DJI 指令仍在处理，请留意遥控器接管" else "未控制无人机"}\n" +
-                "SDK：$registerStatus\n状态：${controller?.state() ?: State.IDLE}\n$message\n" + position +
-                "方向：${lastBearing?.let { "%.1f°".format(it) } ?: "WAIT / 未输入"}\n" +
-                "速度 N/E：%.2f / %.2f m/s\n".format(lastCommand.north, lastCommand.east) +
-                "队列：${queue?.consumed() ?: 0} / ${queue?.size() ?: 0}\n" +
-                "日志：$logPath\n目标点为图中绿圈。实机定位轨迹仅在 GPS 判据下显示。"
+    private fun saveSettings() { getPreferences(MODE_PRIVATE).edit()
+        .putString("queue_manual_v2", bearings.text.toString()).putString("speed_manual_v2", speed.text.toString())
+        .putString("yaw_manual_v2", yaw.text.toString()).apply() }
+    private fun render() {
+        if (!::status.isInitialized) return
+        val busy = active || bridge?.busy == true
+        editable.forEach { it.isEnabled = !busy }
+        start.isEnabled = !busy
+        start.text = if (live.isChecked) "已手动定位，启动实机序列…" else "启动本地模拟"
+        land.isEnabled = active && shown.canLand
+        confirm.isEnabled = active && liveSession && shown.confirmationNeeded
+        val t = shown.telemetry
+        val telemetry = t?.let { "相对起飞点高度：%.2f m（启动时 %.2f m）\n航向：%.1f°\n实际水平速度：%.2f m/s\n电量：%d%%\n定位可用：%s\n".format(
+            it.altitude, shown.initialAltitude, it.yaw, it.horizontalSpeed, it.battery, it.positioning) } ?: ""
+        val preflight = if (live.isChecked && !busy && t != null)
+            "启动检查：${AcousticLandingController.movementIssue(SystemClock.elapsedRealtime(), t) ?: if (shown.canStart) "可以启动" else "等待电量≥30%且稳定悬停2秒"}\n" else ""
+        val modeLabel = if (bridge?.busy == true) "实机控制或交接处理中" else if (live.isChecked) "实机模式" else "本地模拟模式"
+        status.text = "$modeLabel\nSDK：$registerStatus\n状态：${shown.state}\n$message\n${shown.detail}\n" +
+            preflight + telemetry + "飞行模式：${shown.flightMode}\n队列：${shown.consumed} / ${shown.total}\n" +
+            "输入：${shown.bearing ?: "WAIT / 队列结束"}\n水平命令 N/E：%.2f / %.2f m/s\n".format(shown.command.north, shown.command.east) +
+            "累计指令路程：%.2f m（不是实测距离）\n".format(shown.commandedPath) +
+            (if (!liveSession) "模拟 N/E：%.2f / %.2f m\n".format(simNorth, simEast) else "实机无位置轨迹；移动终点须目视判断。\n") +
+            "队列结束不会自动降落。紧急制动会终止本次队列并交还遥控器。\n日志：$logPath"
     }
-
     private fun toast(text: String) { Toast.makeText(this, text, Toast.LENGTH_LONG).show() }
+    override fun onResume() { super.onResume(); foreground = true; handler.post(ticker) }
     override fun onPause() {
-        if (active) fault("页面离开前台，停止实验并交还遥控器")
+        foreground = false; bridge?.emergencyStop("页面离开前台，请遥控器接管")
+        if (active) stop("页面离开前台，本次实验已终止")
+        dialog?.dismiss(); dialog = null; handler.removeCallbacks(ticker)
         super.onPause()
     }
-    override fun onDestroy() {
-        finishRun()
-        runCatching { bridge?.close() }
-        super.onDestroy()
-    }
-
-    private inner class PositionPlot : View(this) {
-        private val points = mutableListOf<Pair<Float, Float>>()
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private var arrivalRadius = 0.8
-        fun reset() { points.clear(); invalidate() }
-        fun add(north: Double, east: Double, radius: Double) {
-            if (!north.isFinite() || !east.isFinite()) return
-            if (points.size >= 1500) points.removeAt(0)
-            points.add(north.toFloat() to east.toFloat())
-            arrivalRadius = radius
-            invalidate()
-        }
-        override fun onDraw(canvas: Canvas) {
-            canvas.drawColor(Color.rgb(16, 25, 36))
-            val cx = width / 2f; val cy = height / 2f
-            val range = max(6f, points.maxOfOrNull { max(kotlin.math.abs(it.first), kotlin.math.abs(it.second)) + 1 } ?: 6f)
-            val scale = minOf(width, height) / (2f * range)
-            paint.color = Color.DKGRAY; paint.strokeWidth = 2f
-            canvas.drawLine(cx, 0f, cx, height.toFloat(), paint)
-            canvas.drawLine(0f, cy, width.toFloat(), cy, paint)
-            paint.color = Color.GREEN; paint.style = Paint.Style.STROKE
-            canvas.drawCircle(cx, cy, (arrivalRadius * scale).toFloat(), paint)
-            paint.color = Color.CYAN
-            points.zipWithNext().forEach { (a, b) ->
-                canvas.drawLine(cx + a.second * scale, cy - a.first * scale,
-                    cx + b.second * scale, cy - b.first * scale, paint)
-            }
-            paint.style = Paint.Style.FILL
-            points.lastOrNull()?.let { canvas.drawCircle(cx + it.second * scale, cy - it.first * scale, 7f, paint) }
-            paint.color = Color.WHITE; paint.textSize = 24f
-            canvas.drawText("N ↑   E →   ±${range.toInt()} m", 12f, 30f, paint)
-        }
-    }
+    override fun onDestroy() { bridge?.close(); finishRun(); super.onDestroy() }
 }

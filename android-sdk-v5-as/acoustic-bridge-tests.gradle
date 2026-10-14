@@ -1,0 +1,38 @@
+// Host-only adapter regression tests. Fake Android/DJI classes never enter the application APK.
+configurations { acousticBridgeCompiler }
+dependencies {
+    acousticBridgeCompiler 'org.jetbrains.kotlin:kotlin-compiler-embeddable:2.1.0'
+    acousticBridgeCompiler 'org.jetbrains.kotlin:kotlin-stdlib:2.1.0'
+    acousticBridgeCompiler 'org.jetbrains:annotations:13.0'
+}
+def hostCore = layout.buildDirectory.dir('acoustic-host-tests/core')
+def hostBridge = layout.buildDirectory.dir('acoustic-host-tests/bridge')
+def hostSources = rootProject.fileTree('../tests/bridge') { include '*.kt' }
+def bridgeSource = file('src/main/java/dji/sampleV5/aircraft/acoustics/DjiFlightBridge.kt')
+tasks.register('compileAcousticBridgeCore', JavaCompile) {
+    source fileTree('src/main/java/dji/sampleV5/aircraft/acoustics/core') { include '*.java' }
+    classpath = files()
+    destinationDirectory = hostCore
+    sourceCompatibility = '1.8'; targetCompatibility = '1.8'
+    options.encoding = 'UTF-8'
+}
+tasks.register('compileAcousticBridgeTests', JavaExec) {
+    dependsOn 'compileAcousticBridgeCore'
+    classpath = configurations.acousticBridgeCompiler
+    mainClass = 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler'
+    inputs.files(hostSources, bridgeSource)
+    inputs.dir(hostCore)
+    outputs.dir(hostBridge)
+    doFirst {
+        args = ['-no-stdlib', '-no-reflect', '-nowarn', '-jvm-target', '1.8', '-classpath',
+                files(hostCore, configurations.acousticBridgeCompiler).asPath, '-d', hostBridge.get().asFile.absolutePath,
+                bridgeSource.absolutePath] + hostSources.files.collect { it.absolutePath }
+    }
+}
+tasks.register('testAcousticBridge', JavaExec) {
+    group = 'verification'
+    description = 'Exercise production DJI adapter with deterministic host fakes; no aircraft I/O.'
+    dependsOn 'compileAcousticBridgeTests'
+    classpath = files(hostCore, hostBridge, configurations.acousticBridgeCompiler)
+    mainClass = 'AcousticBridgeTestKt'
+}

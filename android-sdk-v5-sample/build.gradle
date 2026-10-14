@@ -5,6 +5,7 @@ if (privateFile.exists()) privateFile.withInputStream { privateProperties.load(i
 apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
 apply plugin: 'kotlin-kapt'
+apply from: rootProject.file('acoustic-bridge-tests.gradle')
 
 android {
     namespace "dji.sampleV5.aircraft"
@@ -15,8 +16,8 @@ android {
         applicationId privateProperties.getProperty("APPLICATION_ID", "com.zheng13.acousticslanding").trim()
         minSdkVersion Integer.parseInt(project.ANDROID_MIN_SDK_VERSION)
         targetSdkVersion Integer.parseInt(project.ANDROID_TARGET_SDK_VERSION)
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.1"
         manifestPlaceholders["API_KEY"] = privateProperties.getProperty("AIRCRAFT_API_KEY", "").trim()
         manifestPlaceholders["GMAP_API_KEY"] = privateProperties.getProperty("GMAP_API_KEY", "")
         manifestPlaceholders["MAPLIBRE_TOKEN"] = privateProperties.getProperty("MAPLIBRE_TOKEN", "")

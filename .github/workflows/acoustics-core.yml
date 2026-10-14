@@ -12,3 +12,5 @@ jobs:
           distribution: temurin
           java-version: '17'
       - run: ./scripts/test_acoustics.sh
+      - run: ./gradlew :sample:testAcousticBridge
+        working-directory: android-sdk-v5-as

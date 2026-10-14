@@ -1,83 +1,61 @@
 # DJI Acoustics Autolanding Android
 
-基于 DJI Mobile SDK V5 的声学方向引导降落 Android 项目。第一阶段现场**无 GPS，由操作员先把无人机飞到预定降落点上方**，再使用可编辑的模拟偏离角队列，以 500 ms 周期测试 Android 处理和飞行控制链路。到达由操作员明确确认，之后悬停 2 秒，再交给 DJI 自动降落。
+第一阶段是**人工起飞和定位 → 执行模拟方向队列 → 队列结束后悬停 → 人工决定是否降落**。现场不要求 GPS，但飞控必须能使用 GPS 或下视视觉定位稳定飞行。应用不读取相机图像；飞控自身的视觉定位仍可能必需。
 
-本仓库独立于原毕设目录。代码基于 [mini4pro-vision-autolanding-android](https://github.com/zhengthirteen/mini4pro-vision-autolanding-android) 的 `49578d1e3b2eb7af8b63a7565aed83610dd04e8c` 快照迁移，重新建立 Git 历史；保留 DJI Sample/UXSDK 多模块工程，移除视觉降落、YOLO 模型、OpenCV 模块及旧示例 APK。声学入口不读取相机帧、不调用视觉推理。DJI 原生诊断页面仍保留供注册和连接排查。
+从安装开发工具到手机操作，请先阅读 **[完整新手操作手册](docs/operation-manual.md)**。实验顺序与验收表见 [实验步骤](docs/experiment-guide.md)，审查结果见 [安全审查与验证范围](docs/safety-review.md)。
 
-## 已实现的第一阶段
+## 当前流程（v1.1）
 
-- 编辑方向队列：`180*40`、`180,170,160,WAIT,90`；支持负角、超过一周的角度和重复次数。
-- 2 Hz 输入方向、10 Hz 发送控制指令；圆周角滤波、定速修正、保持高度和航向。
-- 默认本地模拟：无人机已位于目标上方、高度 4 m，队列 `WAIT*120` 输出悬停，显示状态，不调用飞行控制接口。
-- 默认采用人工到达判据，无需飞机 GPS 或目标经纬度；点击到达确认前不会自行开始降落。实机控制默认关闭。
-- 自定义角度用于水平控制响应测试；另保留位置判据模拟/GPS 演示，需主动切换。
-- 到达后悬停确认 2 秒，再依次释放 Virtual Stick、请求 DJI 自动降落；请求需回调成功，实际落地依据飞行状态判断。
-- 输入或遥测过期、控制循环延迟、队列结束、控制权丢失、超时、页面离开前台时停止；提供取消降落和最终降落确认按钮。
-- 实验 CSV 日志、纯 JVM 回归测试，以及 GitHub Actions 测试工作流。
+1. 打开 App，设置有限方向队列，点击“检查并保存队列”。默认 `WAIT*20`，每项 0.5 秒，共 10 秒；默认速度 `0.1 m/s`，实机模式默认关闭。
+2. 操作员手动起飞、飞到目标上方并稳定悬停。实机模式只观察遥测，点击启动并再次确认后才申请控制权。
+3. 按队列发送水平速度，竖直速度和偏航角速度均为零。没有“确认到达即自动降落”的功能。
+4. 队列结束进入 `HOVERING`，持续发送零速度。只有稳定悬停至少 2 秒后，“人工申请降落…”才可用；必须另行点击并确认。
+5. 顶部红色“紧急制动”立即终止本次队列、取消本次程序发起的降落并释放控制权；队列不会续播。遥控器负责最终接管。
 
-第一阶段验证控制链路，尚未完成实飞验证，也未实现纯声学定位。方位角只能提供方向，不能单独证明到达。若阵列与降落点不重合，还需要解决不同原点之间的几何转换。当前队列约定的是“降落点 → 无人机”的偏离角；现场到达由操作员判断。见 [第一阶段设计](docs/stage1-design.md) 与 [方向输入约定](docs/direction-input.md)。
+偏离角沿用“目标 → 无人机”的地理方位约定，北 0°、顺时针；软件反向修正。因此 `180` 产生向北速度，`0` 产生向南速度，`WAIT` 为零速度。详见 [方向约定](docs/direction-input.md)。模拟方向是开环输入，不会随真实位置变化，也不能判断到达。
 
-## 开发环境与构建
+## 控制保护
 
-- Android Studio、JDK 17、Android SDK 35；最低 Android 7.0/API 24。
-- Gradle Wrapper 8.12、Android Gradle Plugin 8.5.0、Kotlin 2.1.0、DJI MSDK 5.17.0。
-- 当前 APK 仅打包 `arm64-v8a`，面向 DJI Mini 4 Pro + RC-N2 + Android 手机；具体功能可用性需实机联调。
+- 独立控制线程，10 Hz 输出；界面心跳超过 350 ms、控制循环间隔超过 350 ms 或遥测超过 750 ms 时终止。停止锁存，迟到的心跳不能恢复会话。
+- 默认速度 0.1 m/s，范围 0.05–0.3；最多 120 项/60 秒，预计水平指令路程不超过 3 m。
+- 启动要求手动起飞、有效定位、允许的飞行模式、电量至少 30%、连续稳定悬停 2 秒。
+- 运行时限制相对起飞点高度 2–8 m、相对启动高度变化不超过 0.5 m；实际水平速度超过 1 m/s、垂直速度绝对值超过 0.5 m/s、电量低于 20% 时停止。
+- 离开前台、失联、控制权/高级模式丢失、SDK 交接失败都停止；交接未确认时禁止重新启动。
+- 无距离反馈，指令路程不是实测距离。软件零速度不保证没有惯性/漂移；Mini 4 Pro 的虚拟摇杆避障不能作为本实验的保障。
 
-Android Studio **打开 `android-sdk-v5-as/`**，不是仓库根目录。
+代码与模拟检查不能保证实机绝对安全。首次实飞需先验证遥控器接管、零速度悬停和短距离方向响应；不要直接开展长序列或遮挡传感器的试验。
+
+## 开发与构建
+
+Android Studio 打开 **`android-sdk-v5-as/`**；应用模块是 **`:sample`**。环境：JDK 17、Android SDK Platform 35、Gradle Wrapper 8.12、AGP 8.5.0、Kotlin 2.1.0、DJI MSDK 5.17.0。当前 APK 仅含 `arm64-v8a`，最低 Android 7.0/API 24；具体手机/固件兼容性需实测。
 
 ```bash
 cd android-sdk-v5-as
+# 新电脑且文件不存在时才复制；已有本机配置不要覆盖
 cp -n secrets.properties.example secrets.properties
-# 编辑 secrets.properties；APPLICATION_ID 必须与 DJI Key 登记的 Package Name 一致
-# Android Studio 会生成本机 local.properties；命令行也可通过 ANDROID_HOME 指向 SDK
+# 按 docs/api-key-setup.md 填写匹配的 APPLICATION_ID 和 AIRCRAFT_API_KEY
 ./gradlew :sample:assembleDebug
 ```
 
-纯模拟不要求 DJI 注册成功。连接实机前必须配置与实际 `applicationId` 匹配的 DJI API Key。仓库默认包名为 `com.zheng13.acousticslanding`，配置它对应的新 Key 后可与原视觉应用并存。也可在本机 `secrets.properties` 将 `APPLICATION_ID` 设为 `com.zheng13.gradproject`，复用原项目对应的 Key；此时两个 App 不能同时安装在同一 Android 用户空间。新仓库与原目录仍保持独立。
+APK：`android-sdk-v5-sample/build/outputs/apk/debug/sample-debug.apk`。版本为 1.1 / versionCode 2。
 
-`secrets.properties` 和 `local.properties` 已忽略，Key 和签名密码不进入 Git。Debug 使用自动生成的 Android debug keystore；若原视觉 App 使用不同签名，本次 APK 无法直接覆盖它。查找旧 Key、复用配置、新 Key 申请、安装冲突和注册检查见 [DJI API Key 配置指南](docs/api-key-setup.md)。
+Key 保存在 Git 忽略的 `android-sdk-v5-as/secrets.properties`。仓库默认包名 `com.zheng13.acousticslanding`；本机按用户要求复用旧 Key，实际包名为 `com.zheng13.gradproject`。同一包名不能与原视觉 App 并存；签名不同会拒绝覆盖，处理方式见 [API Key 指南](docs/api-key-setup.md)。原毕设源目录独立保留。
 
-APK 输出：`android-sdk-v5-sample/build/outputs/apk/debug/sample-debug.apk`。DJI SDK 使 APK 较大，编译结果不纳入 Git。
-
-## 先运行模拟
-
-1. 安装 APK，打开“声学自主降落”，保持“实机发送”未勾选。
-2. 保持默认队列 `WAIT*120` 与“人工确认”，点“启动模拟实验”。这串队列可运行约 60 秒，没有水平移动指令。
-3. 点击“确认已到目标正上方”：悬停 2 秒后开始模拟降落，最终进入 `COMPLETE`。
-4. 不点击到达确认，队列结束后停止；不会因队列结束或角度为零而降落。
-5. 测试水平响应时编辑角度队列；它会让飞机移动，实机降落前须重新人工确认位置。
-
-若要演示位置收敛，主动选“位置判据”、队列 `180*40`、速度 `0.3 m/s`、半径 `0.8 m`。该附加模拟从目标南侧 4 m 出发，约 12.7 秒申请降落。它不是现场无 GPS 实验的默认流程。
-
-`180°` 表示无人机位于目标南方，因此修正方向是北方。它不是“向南飞”的指令。完整实机操作见 [实验步骤](docs/experiment-guide.md)。
-
-## 测试与当前验证范围
+在仓库根目录运行纯 JVM 检查：
 
 ```bash
-# 仓库根目录；只需 JDK，无需 Android SDK 或无人机
 ./scripts/test_acoustics.sh
 ```
 
-本机已通过 15 组控制场景，包括默认无 GPS/缺少定位的 WAIT 悬停与人工确认、完整位置模拟接近、反向修正、航向变换、圆周角跨界、输入过期、失联、定位无效、到达计时重置、控制循环阻塞和指令路程限制。已通过 `:sample:assembleDebug` 构建。尚未在 Android 设备、DJI 仿真器或实机上验证；简单运动积分不代表真实降落精度。
+控制场景覆盖队列结束悬停、显式降落、紧急中止、方向反转、全部 360 个整数方位、机头变换、过期遥测、定位/飞行模式/电量/高度/速度异常及会话心跳锁存。Android 编译和 JVM 模拟不等于手机、DJI 仿真器或实机验证；本次尚未连接飞机进行实飞。
 
-## 项目结构
+## 目录与来源
 
-```text
-android-sdk-v5-as/             Android Studio / Gradle 入口
-android-sdk-v5-sample/         Android 主应用与 DJI 示例
-  src/main/java/dji/sampleV5/aircraft/acoustics/
-    AcousticLandingActivity.kt     参数、2 Hz 输入、10 Hz 循环、模拟、轨迹、日志
-    DjiFlightBridge.kt             DJI 遥测、Virtual Stick、降落回调与取消
-    core/                         不依赖 Android/DJI 的队列和控制状态机
-android-sdk-v5-uxsdk/          继承的 DJI UXSDK
-docs/                         设计、方向约定、实验和来源说明
-examples/directions/          可粘贴到界面的示例队列
-tests/                        纯 JVM 控制回归场景
-scripts/test_acoustics.sh      本地测试入口
-```
+- `android-sdk-v5-as/`：Gradle 入口、本机配置。
+- `android-sdk-v5-sample/`：Android 应用；新的控制逻辑位于 `dji.sampleV5.aircraft.acoustics`。
+- `acoustics/core/`：不依赖 Android/DJI 的队列、控制器、会话看门狗。
+- `android-sdk-v5-uxsdk/`：继承的 DJI UXSDK。
+- `docs/`：新手手册、设计、输入约定、审查与实验说明。
+- `examples/directions/`：方向队列示例；`tests/`：JVM 回归场景。
 
-后续接入阵列时，需要明确阵列朝向、角度原点、通信方式、数据时间戳/序号，以及阵列不在目标点时的几何转换和到达判据。第一阶段不实现阵列信号处理、通信接收或距离估计。
-
-## Git 与来源
-
-`origin` 指向 [新的声学仓库](https://github.com/zhengthirteen/DJI-acoustics-autolanding-android)，`vision-upstream` 仅记录原视觉仓库地址。迁移没有复制原目录的未提交修改。详细来源和第三方许可见 [来源说明](docs/provenance.md) 与 [DJI 上游许可](LICENSE-DJI.txt)。
+基于原视觉仓库 `49578d1e3b2eb7af8b63a7565aed83610dd04e8c` 快照独立初始化 Git，移除原视觉降落/YOLO/OpenCV。声学界面仅提供只读 SDK 状态，没有进入 DJI 示例飞行控制菜单的按钮。详见 [来源说明](docs/provenance.md) 与 [DJI 许可](LICENSE-DJI.txt)。

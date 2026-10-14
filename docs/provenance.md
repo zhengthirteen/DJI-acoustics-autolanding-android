@@ -13,4 +13,4 @@
 
 原项目基于 [DJI Mobile-SDK-Android-V5](https://github.com/dji-sdk/Mobile-SDK-Android-V5) 的 SampleCode-V5。继承文件保留各自版权声明。`LICENSE-DJI.txt` 来自 [DJI 官方许可文件](https://github.com/dji-sdk/Mobile-SDK-Android-V5/blob/dev-sdk-main/LICENSE.txt)，区分 Sample 的 MIT 许可与二进制 SDK 的 EULA；没有重新授权 DJI SDK 或其他第三方依赖。
 
-`scripts/data_analysis/` 是原视觉项目继承的分析工具，当前声学 CSV 格式不同，不能直接假定旧脚本兼容。
+`scripts/data_analysis/` 是原视觉项目继承的分析工具，当前声学 CSV 格式不同，不能直接假定旧脚本兼容。v1.1 移除了该目录中随快照继承的旧视觉实验 CSV，并忽略后续生成的 `FlightData_*.csv`。声学界面仅提供只读状态查看，不再进入 DJI 示例控制菜单。

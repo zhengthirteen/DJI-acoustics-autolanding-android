@@ -17,14 +17,15 @@ public final class DirectionQueue {
 
     /** Examples: "180, 170, WAIT, -90" or "180*40". Never loops implicitly. */
     public static DirectionQueue parse(String text) {
-        if (text == null || text.trim().isEmpty()) throw new IllegalArgumentException("方向队列不能为空");
+        if (text == null || text.trim().isEmpty() || text.length() > 4096)
+            throw new IllegalArgumentException("方向队列不能为空且文本不能超过 4096 字符");
         List<Double> result = new ArrayList<>();
         for (String token : text.trim().split("[\\s,，;；]+")) {
             String[] parts = token.split("\\*", -1);
             if (parts.length > 2) throw new IllegalArgumentException("无效方向: " + token);
             int count = parts.length == 2 ? Integer.parseInt(parts[1]) : 1;
-            if (count < 1 || count > 1200 || result.size() + count > 1200)
-                throw new IllegalArgumentException("队列必须包含 1–1200 个采样");
+            if (count < 1 || count > 120 || result.size() + count > 120)
+                throw new IllegalArgumentException("队列必须包含 1–120 个采样（最多 60 秒）");
             Double angle = null;
             if (!parts[0].toUpperCase(Locale.ROOT).equals("WAIT")) {
                 double value = Double.parseDouble(parts[0]);
@@ -33,6 +34,7 @@ public final class DirectionQueue {
             }
             for (int i = 0; i < count; i++) result.add(angle);
         }
+        if (result.isEmpty()) throw new IllegalArgumentException("方向队列不能为空");
         return new DirectionQueue(result);
     }
 
@@ -44,4 +46,5 @@ public final class DirectionQueue {
     }
     public int size() { return bearings.size(); }
     public int consumed() { return index; }
+    public int movingSamples() { int count = 0; for (Double angle : bearings) if (angle != null) count++; return count; }
 }

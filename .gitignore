@@ -54,6 +54,7 @@ __pycache__/
 *.zip
 experiments/
 flight_logs/
+FlightData_*.csv
 artifacts/
 
 # Local recordings and thesis documents

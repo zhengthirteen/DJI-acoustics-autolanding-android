@@ -80,8 +80,8 @@ APK 输出到：
 ## 验证配置是否成功
 
 1. 首次注册时让手机联网，打开“声学自主降落”，保持“实机发送”关闭。
-2. 等待状态面板出现 **`SDK：已注册`**；必要时进入 **“DJI 注册与连接诊断”** 查看注册错误。SDK 注册过程中需要连接 DJI 服务验证 App Key，见 [SDKManager 官方 API](https://developer.dji.com/api-reference-v5/android-api/Components/SDKManager/DJISDKManager.html)。
-3. 再连接遥控器与无人机，检查诊断页面的产品连接状态与实际产品名称。注册成功与飞机连接成功分别检查；这两步无需起飞。
+2. 等待状态面板出现 **`SDK：已注册`**；必要时进入 **“DJI 注册与连接状态（只读）”** 查看注册信息。SDK 注册过程中需要连接 DJI 服务验证 App Key，见 [SDKManager 官方 API](https://developer.dji.com/api-reference-v5/android-api/Components/SDKManager/DJISDKManager.html)。
+3. 再连接遥控器与无人机，检查高度、航向、电量等遥测是否有效。注册成功与飞机连接成功分别检查；地面未飞行会阻止控制启动，但不影响 SDK 注册。
 4. 若出现 `INVALID_METADATA`，先检查开发者中心登记的 `Package Name` 与 APK 实际包名是否一致，再检查 Key 是否复制完整、手机联网是否正常。该报错可能与包名不匹配有关，不能只凭错误码认定原因。
 5. 注册与连接都成功后，按 [第一阶段实验步骤](experiment-guide.md) 先进行本地模拟与遥测检查，再开展受控飞行测试。
 
