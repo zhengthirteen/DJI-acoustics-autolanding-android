@@ -2,6 +2,7 @@ import dji.sampleV5.aircraft.acoustics.core.AcousticLandingController;
 import dji.sampleV5.aircraft.acoustics.core.AcousticLandingController.*;
 import dji.sampleV5.aircraft.acoustics.core.DirectionQueue;
 import dji.sampleV5.aircraft.acoustics.core.SessionWatchdog;
+import dji.sampleV5.aircraft.acoustics.core.DirectionPlan;
 
 /** Deterministic JVM scenarios. No SDK, radio or aircraft is connected. */
 public final class AcousticControllerTest {
@@ -41,6 +42,34 @@ public final class AcousticControllerTest {
         for (String bad : new String[]{"", ",,,", "NaN", "Infinity", "180*0", "180*-1", "180*121", "WAIT*120,0", "0**2", "0*", "WAI"})
             reject(() -> DirectionQueue.parse(bad));
         reject(q::next); scenarios++;
+        DirectionPlan plan = new DirectionPlan();
+        for (DirectionPlan.Movement option : DirectionPlan.Movement.values()) plan.add(option, 2);
+        DirectionQueue selected = DirectionQueue.parse(plan.toText());
+        double[] expectedBearings = {180,225,270,315,0,45,90,135};
+        check(selected.next() == null && selected.next() == null, "Hover choice must encode WAIT");
+        for (double expected : expectedBearings) {
+            near(selected.next(), expected, "Selected movement bearing mapping");
+            near(selected.next(), expected, "Selected duration mapping");
+            double a = Math.toRadians(expected);
+            Command chosen = new Command(-Math.cos(a) * 0.1, -Math.sin(a) * 0.1);
+            double movement = Math.toRadians(DirectionQueue.normalize(expected + 180));
+            check(chosen.north * Math.cos(movement) + chosen.east * Math.sin(movement) > 0.099,
+                    "Selected label and actual movement disagree");
+        }
+        scenarios++;
+        plan.clear(); plan.add(DirectionPlan.Movement.NORTH, 2); plan.add(DirectionPlan.Movement.HOVER, 8);
+        check(plan.toText().equals("180*2,WAIT*8"), "North preset encoding");
+        plan.move(1, -1); check(plan.toText().equals("WAIT*8,180*2"), "Queue reorder");
+        plan.changeDuration(0, 4); plan.remove(1); check(plan.toText().equals("WAIT*4"), "Duration/delete editing");
+        reject(() -> plan.move(0, -1));
+        plan.clear(); plan.add(DirectionPlan.Movement.HOVER, 120);
+        reject(() -> plan.add(DirectionPlan.Movement.NORTH, 1));
+        reject(() -> plan.changeDuration(0, 121));
+        check(plan.totalSamples() == 120, "Invalid edits changed plan"); scenarios++;
+        DirectionPlan imported = DirectionPlan.fromText("180,180,22.5,WAIT*2,-90");
+        check(imported.toText().equals("180*2,22.5*1,WAIT*2,270*1"), "Import preserves bearings and durations");
+        check(imported.steps().get(1).label().contains("202.5"), "Arbitrary imported direction is mislabeled");
+        scenarios++;
         reject(() -> new Config(Double.NaN)); reject(() -> new Config(Double.POSITIVE_INFINITY));
         reject(() -> new Config(0.01)); reject(() -> new Config(0.31));
         reject(() -> create("180*61", 0.1)); reject(() -> create("180*21", 0.3));

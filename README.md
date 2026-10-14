@@ -4,15 +4,19 @@
 
 从安装开发工具到手机操作，请先阅读 **[完整新手操作手册](docs/operation-manual.md)**。实验顺序与验收表见 [实验步骤](docs/experiment-guide.md)，审查结果见 [安全审查与验证范围](docs/safety-review.md)。
 
-## 当前流程（v1.1）
+## 当前流程（v1.2）
 
-1. 打开 App，设置有限方向队列，点击“检查并保存队列”。默认 `WAIT*20`，每项 0.5 秒，共 10 秒；默认速度 `0.1 m/s`，实机模式默认关闭。
+1. 打开 App，通过选项选择实际移动方向和时长，点击“添加这一段”，再“检查并保存队列”。支持预设、删改排序及可选文本导入。默认 `WAIT*20`，每项 0.5 秒，共 10 秒；默认速度 `0.1 m/s`，实机模式默认关闭。
 2. 操作员手动起飞、飞到目标上方并稳定悬停。实机模式只观察遥测，点击启动并再次确认后才申请控制权。
 3. 按队列发送水平速度，竖直速度和偏航角速度均为零。没有“确认到达即自动降落”的功能。
 4. 队列结束进入 `HOVERING`，持续发送零速度。只有稳定悬停至少 2 秒后，“人工申请降落…”才可用；必须另行点击并确认。
 5. 顶部红色“紧急制动”立即终止本次队列、取消本次程序发起的降落并释放控制权；队列不会续播。遥控器负责最终接管。
 
 偏离角沿用“目标 → 无人机”的地理方位约定，北 0°、顺时针；软件反向修正。因此 `180` 产生向北速度，`0` 产生向南速度，`WAIT` 为零速度。详见 [方向约定](docs/direction-input.md)。模拟方向是开环输入，不会随真实位置变化，也不能判断到达。
+
+## 地面通信检查
+
+点击“检查/刷新通信”，无需起飞即可分别查看 SDK 注册、设备/飞控连接、逐项遥测及只读硬件回包，并可复制诊断。修复旧版数据已到达仍显示“等待遥测”的文案，以异步硬件读取补充订阅；不会把缓存伪装成新数据或放宽失联保护。详见 [遥测与连接排查指南](docs/connection-troubleshooting.md)。
 
 ## 控制保护
 
@@ -37,7 +41,7 @@ cp -n secrets.properties.example secrets.properties
 ./gradlew :sample:assembleDebug
 ```
 
-APK：`android-sdk-v5-sample/build/outputs/apk/debug/sample-debug.apk`。版本为 1.1 / versionCode 2。
+APK：`android-sdk-v5-sample/build/outputs/apk/debug/sample-debug.apk`。版本为 1.2 / versionCode 3。
 
 Key 保存在 Git 忽略的 `android-sdk-v5-as/secrets.properties`。仓库默认包名 `com.zheng13.acousticslanding`；本机按用户要求复用旧 Key，实际包名为 `com.zheng13.gradproject`。同一包名不能与原视觉 App 并存；签名不同会拒绝覆盖，处理方式见 [API Key 指南](docs/api-key-setup.md)。原毕设源目录独立保留。
 
@@ -47,7 +51,7 @@ Key 保存在 Git 忽略的 `android-sdk-v5-as/secrets.properties`。仓库默�
 ./scripts/test_acoustics.sh
 ```
 
-控制场景覆盖队列结束悬停、显式降落、紧急中止、方向反转、全部 360 个整数方位、机头变换、过期遥测、定位/飞行模式/电量/高度/速度异常及会话心跳锁存。Android 编译和 JVM 模拟不等于手机、DJI 仿真器或实机验证；本次尚未连接飞机进行实飞。
+当前通过 37 组纯 JVM 场景与 27 组适配器主机替身场景。覆盖选项式队列映射/编辑/导入、通信诊断/硬件补读、队列结束悬停、显式降落、紧急中止、方向反转、全部 360 个整数方位、机头变换、过期遥测、定位/飞行模式/电量/高度/速度异常及会话心跳锁存。Android 编译和主机测试不等于手机、DJI 仿真器或实机验证；本次修改尚未在用户设备上复测。
 
 ## 目录与来源
 

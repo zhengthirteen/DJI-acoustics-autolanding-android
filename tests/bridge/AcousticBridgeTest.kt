@@ -9,7 +9,7 @@ import dji.sdk.keyvalue.value.flightcontroller.*
 import dji.v5.manager.KeyManager
 import dji.v5.manager.aircraft.virtualstick.*
 
-private class Fixture {
+private class Fixture(hardwareReads: Boolean = false, private val pushTelemetry: Boolean = true, flying: Boolean = true) {
     val keys: KeyManager
     val sticks: VirtualStickManager
     val bridge: DjiFlightBridge
@@ -17,14 +17,15 @@ private class Fixture {
     init {
         TestLoop.reset(); KeyManager.reset(); VirtualStickManager.reset()
         keys = KeyManager.getInstance(); sticks = VirtualStickManager.getInstance()
-        keys.values.putAll(mapOf("connected" to true, "flying" to true, "motors" to true,
+        keys.hardwareReadsEnabled = hardwareReads; keys.pushInitial = pushTelemetry
+        keys.values.putAll(mapOf("connected" to true, "flying" to flying, "motors" to flying,
             "altitude" to 4.0, "attitude" to Attitude(0.0), "velocity" to Velocity3D(0.0,0.0,0.0),
             "gps" to GPSSignalLevel.NONE, "vision" to true, "mode" to FlightMode.GPS_NORMAL,
             "battery" to 90, "confirmNeeded" to false))
         bridge = DjiFlightBridge(); bridge.observe(); advance(2500)
-        check(bridge.snapshot.canStart) { "Fixture not ready: ${bridge.snapshot}" }
+        check(bridge.snapshot.canStart == flying) { "Unexpected fixture readiness: ${bridge.snapshot}" }
     }
-    fun advance(ms: Long, heartbeat: Boolean = true, telemetry: Boolean = true) {
+    fun advance(ms: Long, heartbeat: Boolean = true, telemetry: Boolean = pushTelemetry) {
         val end = TestLoop.now + ms
         while (TestLoop.now < end) {
             TestLoop.advanceTo(minOf(end, TestLoop.now + 50))
@@ -177,6 +178,62 @@ fun main() {
         check(!other.busy && !f.bridge.busy)
         check(f.sticks.commands.all { it.forward == 0.0 && it.right == 0.0 })
         other.close(); f.advance(100)
+    }
+    scenario("ground communication is healthy without requesting flight control") {
+        val f = Fixture(hardwareReads = true, pushTelemetry = false, flying = false)
+        val s = f.bridge.snapshot
+        check(s.aircraftConnected == true && s.hardwareReadFresh && s.telemetryStatus.contains("齐全"))
+        check(s.detail.contains("通信已建立") && s.detail.contains("地面") && !s.canStart)
+        check(f.keys.readRequests.containsAll(listOf("attitude", "altitude", "velocity")))
+        check(f.sticks.enableCalls == 0 && f.keys.actions.isEmpty())
+    }
+    scenario("unchanged values stay fresh using actual async hardware reads") {
+        val f = Fixture(hardwareReads = true, pushTelemetry = false)
+        f.start("WAIT*20"); f.advance(3000)
+        check(f.bridge.snapshot.state == State.RUNNING && f.bridge.snapshot.hardwareReadFresh)
+        check(f.bridge.snapshot.telemetryStatus.contains("齐全"))
+        f.bridge.emergencyStop(); f.advance(600); f.stopped()
+    }
+    scenario("one missing hardware field is named without inventing freshness") {
+        val f = Fixture(hardwareReads = true, pushTelemetry = false)
+        f.keys.failedReads.add("velocity"); f.advance(1100)
+        val s = f.bridge.snapshot
+        check(!s.canStart && s.aircraftConnected == true)
+        check(s.diagnostics.any { it.startsWith("三轴速度") && it.contains("过期") && it.contains("injected failure") })
+        check(s.diagnostics.any { it.startsWith("相对高度") && it.contains("已收到") })
+        check(f.sticks.enableCalls == 0)
+    }
+    scenario("old hardware reply does not restart a stopped sequence") {
+        val f = Fixture(hardwareReads = true, pushTelemetry = false)
+        f.start("WAIT*20"); f.keys.heldReads.add("velocity"); f.advance(950)
+        check(f.bridge.snapshot.state == State.ABORTED)
+        val stamp = f.bridge.snapshot.telemetry!!.timestamp
+        f.keys.completeRead("velocity"); f.advance(100)
+        check(f.bridge.snapshot.telemetry!!.timestamp == stamp)
+        f.advance(500); f.stopped()
+    }
+    scenario("refresh rejects callbacks from the old subscription epoch") {
+        val f = Fixture(hardwareReads = true, pushTelemetry = false)
+        f.keys.heldReads.add("velocity"); f.advance(400)
+        f.bridge.refreshTelemetry(); f.advance(200)
+        f.keys.completeRead("velocity"); f.advance(100)
+        check(!f.bridge.snapshot.canStart)
+        check(f.bridge.snapshot.diagnostics.any { it.startsWith("三轴速度：缺失") })
+        check(f.sticks.enableCalls == 0 && f.keys.actions.isEmpty())
+    }
+    scenario("one unsupported listener does not prevent other telemetry or hardware fallback") {
+        val f = Fixture(hardwareReads = true, pushTelemetry = false)
+        f.keys.failedListens.add("velocity"); f.bridge.refreshTelemetry(); f.advance(2500)
+        check(f.bridge.snapshot.canStart && f.bridge.snapshot.hardwareReadFresh)
+        check(f.sticks.enableCalls == 0 && f.keys.actions.isEmpty())
+    }
+    scenario("old true connection reply cannot override a later SDK disconnect") {
+        val f = Fixture(hardwareReads = true, pushTelemetry = false)
+        f.keys.heldReads.add("connected"); f.advance(1000)
+        f.keys.values["connected"] = false; f.bridge.productDisconnected(); f.advance(100)
+        f.keys.completeRead("connected"); f.advance(100)
+        check(f.bridge.snapshot.aircraftConnected == false && !f.bridge.snapshot.canStart)
+        check(!f.bridge.snapshot.hardwareReadFresh && f.sticks.enableCalls == 0)
     }
     println("PASS: $scenarios production-adapter scenarios using deterministic Android/DJI fakes (no aircraft I/O).")
 }
