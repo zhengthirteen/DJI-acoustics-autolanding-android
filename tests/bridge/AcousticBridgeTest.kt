@@ -3,6 +3,8 @@ import dji.sampleV5.aircraft.acoustics.DjiFlightBridge
 import dji.sampleV5.aircraft.acoustics.core.AcousticLandingController
 import dji.sampleV5.aircraft.acoustics.core.AcousticLandingController.State
 import dji.sampleV5.aircraft.acoustics.core.DirectionQueue
+import dji.sampleV5.aircraft.acoustics.core.ArrayAngleCalibration
+import dji.sampleV5.aircraft.acoustics.core.LiveBearingInput
 import dji.sdk.keyvalue.key.*
 import dji.sdk.keyvalue.value.common.*
 import dji.sdk.keyvalue.value.flightcontroller.*
@@ -234,6 +236,50 @@ fun main() {
         f.keys.completeRead("connected"); f.advance(100)
         check(f.bridge.snapshot.aircraftConnected == false && !f.bridge.snapshot.canStart)
         check(!f.bridge.snapshot.hardwareReadFresh && f.sticks.enableCalls == 0)
+    }
+    scenario("100 ms calibrated array replay uses the existing connected flight adapter") {
+        val f = Fixture(hardwareReads = true, pushTelemetry = false)
+        val frame = ArrayAngleCalibration(90.0, true, true)
+        val c = AcousticLandingController(AcousticLandingController.Config(0.1), frame.replay("0*10,WAIT*10"))
+        f.session = f.bridge.start(c); f.advance(3500)
+        check(f.bridge.snapshot.aircraftConnected == true && f.bridge.snapshot.hardwareReadFresh)
+        check(f.bridge.snapshot.state == State.HOVERING && f.bridge.snapshot.consumed == 20)
+        check(f.sticks.commands.any { it.right < -0.09 && kotlin.math.abs(it.forward) < 0.000001 })
+        check("startLanding" !in f.keys.actions)
+        val end = TestLoop.now; f.advance(500); f.noMotionAfter(end)
+        f.bridge.emergencyStop(); f.advance(600); f.stopped()
+    }
+    scenario("array stream loss stops motion while DJI telemetry stays healthy") {
+        val f = Fixture(hardwareReads = true, pushTelemetry = false)
+        val input = LiveBearingInput(ArrayAngleCalibration(0.0, true, true))
+        input.offer(0, 180.0, TestLoop.now, TestLoop.now)
+        f.session = f.bridge.start(AcousticLandingController(AcousticLandingController.Config(0.1), input))
+        for (sequence in 1L..20L) {
+            f.advance(100)
+            check(input.offer(sequence, 180.0, TestLoop.now, TestLoop.now))
+        }
+        check(f.sticks.commands.any { it.forward > 0.09 })
+        val lastFrame = TestLoop.now
+        f.advance(1000); f.noMotionAfter(lastFrame + 200); f.stopped()
+        check(f.bridge.snapshot.aircraftConnected == true && f.bridge.snapshot.hardwareReadFresh)
+        check(f.bridge.snapshot.detail.contains("阵列"))
+        check(!input.offer(21, 0.0, TestLoop.now, TestLoop.now))
+        check(f.sticks.enableCalls == 1 && "startLanding" !in f.keys.actions)
+    }
+    scenario("array stream can explicitly finish to hover and then request manual landing") {
+        val f = Fixture()
+        val input = LiveBearingInput(ArrayAngleCalibration(0.0, true, true))
+        input.offer(0, 0.0, TestLoop.now, TestLoop.now)
+        f.session = f.bridge.start(AcousticLandingController(AcousticLandingController.Config(0.1), input))
+        for (sequence in 1L..10L) {
+            f.advance(100); input.offer(sequence, 180.0, TestLoop.now, TestLoop.now)
+        }
+        input.finishForOperator(TestLoop.now); f.advance(2500)
+        check(f.bridge.snapshot.state == State.HOVERING && f.bridge.snapshot.canLand)
+        check("startLanding" !in f.keys.actions)
+        f.bridge.requestLanding(f.session); f.advance(200)
+        check(f.bridge.snapshot.state == State.LANDING && f.keys.actions.count { it == "startLanding" } == 1)
+        f.bridge.emergencyStop(); f.advance(500); f.stopped()
     }
     println("PASS: $scenarios production-adapter scenarios using deterministic Android/DJI fakes (no aircraft I/O).")
 }

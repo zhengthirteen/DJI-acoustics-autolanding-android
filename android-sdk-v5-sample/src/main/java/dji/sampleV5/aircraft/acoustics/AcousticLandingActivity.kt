@@ -10,6 +10,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.text.InputType
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.View
 import android.view.WindowManager
 import android.widget.*
@@ -20,6 +22,7 @@ import dji.sampleV5.aircraft.acoustics.core.AcousticLandingController
 import dji.sampleV5.aircraft.acoustics.core.AcousticLandingController.*
 import dji.sampleV5.aircraft.acoustics.core.DirectionQueue
 import dji.sampleV5.aircraft.acoustics.core.DirectionPlan
+import dji.sampleV5.aircraft.acoustics.core.ArrayAngleCalibration
 import dji.sampleV5.aircraft.models.MSDKManagerVM
 import dji.sampleV5.aircraft.models.globalViewModels
 import java.io.File
@@ -60,6 +63,15 @@ class AcousticLandingActivity : AppCompatActivity() {
     private lateinit var queueSummary: TextView
     private val queueButtons = mutableListOf<Pair<View, Boolean>>()
     private lateinit var communication: TextView
+    private lateinit var inputMode: Spinner
+    private lateinit var legacyEditor: LinearLayout
+    private lateinit var arrayEditor: LinearLayout
+    private lateinit var arrayAngles: EditText
+    private lateinit var arrayZero: EditText
+    private lateinit var arrayRotation: Spinner
+    private lateinit var arrayTarget: CheckBox
+    private lateinit var arrayVerified: CheckBox
+    private lateinit var arrayPreview: TextView
     private lateinit var speed: EditText
     private lateinit var yaw: EditText
     private lateinit var start: Button
@@ -155,23 +167,44 @@ class AcousticLandingActivity : AppCompatActivity() {
             settings.addView(this); editable.add(this)
         }
         label("声学方向序列实验 · 人工决定降落").textSize = 20f
-        label("选择实际移动方向（地理北/东，不是机头前/右）。每项 0.5 秒，软件自动转换成偏离角。")
+        label("原队列：0.5 秒/项。阵列角度回放：0.1 秒/项；先核对阵列零点与顺逆时针。")
         live = CheckBox(this).apply { text = "实机模式（每次进入默认关闭）"; settings.addView(this) }
         editable.add(live)
         live.setOnCheckedChangeListener { _, checked ->
+            if (checked && ::arrayVerified.isInitialized) arrayVerified.isChecked = false
             if (checked) requestTelemetry(true)
             render()
         }
         plan = runCatching { DirectionPlan.fromText(prefs.getString("queue_manual_v2", "WAIT*20")!!) }
             .getOrElse { DirectionPlan.fromText("WAIT*20") }
-        buildQueueEditor(settings)
+        inputMode = Spinner(this).apply {
+            adapter = ArrayAdapter(this@AcousticLandingActivity, android.R.layout.simple_spinner_dropdown_item,
+                listOf("原有方向队列 · 0.5 秒/项", "阵列角度回放 · 0.1 秒/项（10 Hz）"))
+            settings.addView(this); editable.add(this)
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    if (::arrayVerified.isInitialized) arrayVerified.isChecked = false
+                    render()
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
+        }
+        legacyEditor = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; settings.addView(this) }
+        buildQueueEditor(legacyEditor)
+        arrayEditor = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE; settings.addView(this) }
+        buildArrayEditor()
         speed = field("水平速度 m/s（0.05–0.3；首次用 0.1）", "speed_manual_v2", "0.1", true)
         yaw = field("本地模拟机头角度 °（实机自动读取航向）", "yaw_manual_v2", "0", true)
         Button(this).apply {
             text = "检查并保存队列"; settings.addView(this); editable.add(this)
             setOnClickListener { runCatching {
-                val c = configuredController(); saveSettings()
-                message = "队列已保存：${c.total()} 项，${c.total() * 0.5} 秒；结束后只悬停。"; render()
+                // Drafts can be saved before tomorrow's frame/origin is known; starting still requires calibration.
+                val c = if (arrayMode()) AcousticLandingController(Config(speed.text.toString().toDouble()),
+                    DirectionQueue.parse(arrayAngles.text.toString(), DirectionQueue.ARRAY_PERIOD_MS)) else configuredController()
+                saveSettings()
+                message = "队列已保存：${c.total()} 项，${c.durationMs() / 1000.0} 秒（${c.periodMs()} ms/项）；结束后只悬停。" +
+                    if (arrayMode()) "阵列角度启动前仍须核对标定与目标原点。" else ""
+                render()
             }.onFailure { toast(it.message ?: "队列无效") } }
         }
         start = Button(this).apply { settings.addView(this); setOnClickListener { prepareStart() } }
@@ -205,7 +238,7 @@ class AcousticLandingActivity : AppCompatActivity() {
             text = "复制诊断信息"
             actions.addView(this, LinearLayout.LayoutParams(0, -2, 1f))
             setOnClickListener {
-                val report = "App 1.2 / $packageName\n${communication.text}\n${bridge?.snapshot?.diagnostics?.joinToString("\n") ?: "尚无字段诊断"}\n${status.text}"
+                val report = "App 1.3 / $packageName\n${communication.text}\n${bridge?.snapshot?.diagnostics?.joinToString("\n") ?: "尚无字段诊断"}\n${status.text}"
                 (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(
                     ClipData.newPlainText("DJI 通信诊断", report.replace(Regex("[0-9a-fA-F]{24}"), "[标识已隐藏]")))
                 toast("诊断信息已复制；不包含配置文件中的 API Key")
@@ -218,6 +251,84 @@ class AcousticLandingActivity : AppCompatActivity() {
         results.addView(ScrollView(this).apply { addView(readout) }, LinearLayout.LayoutParams(-1, 0, 1f))
         body.addView(results, LinearLayout.LayoutParams(0, -1, 1f))
         setContentView(root)
+    }
+    private fun buildArrayEditor() {
+        val prefs = getPreferences(MODE_PRIVATE)
+        fun label(value: String) = TextView(this).apply { text = value; textSize = 15f; arrayEditor.addView(this) }
+        fun button(value: String, action: () -> Unit) = Button(this).apply {
+            text = value; arrayEditor.addView(this); editable.add(this)
+            setOnClickListener { if (!active && bridge?.busy != true) runCatching(action).onFailure { toast(it.message ?: "输入无效") } }
+        }
+        label("阵列原始角度：阵列 → 音源（无人机）。每项 0.1 秒，最多 600 项 / 60 秒。这里先回放角度；真实网络/串口协议待联调确定。")
+        arrayAngles = EditText(this).apply {
+            setText(prefs.getString("array_replay_v1", "WAIT*100"))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 2; maxLines = 4; arrayEditor.addView(this); editable.add(this)
+        }
+        label("添加角度（滚轮 1° 步长；上面的文本也支持小数角度）")
+        val angle = NumberPicker(this).apply {
+            minValue = 0; maxValue = 359; value = 0; wrapSelectorWheel = true
+            arrayEditor.addView(this, LinearLayout.LayoutParams(-1, dp(110))); editable.add(this)
+        }
+        val repeat = Spinner(this).apply {
+            adapter = ArrayAdapter(this@AcousticLandingActivity, android.R.layout.simple_spinner_dropdown_item,
+                (1..600).map { "${it / 10.0} 秒（$it 项 × 0.1 秒）" })
+            setSelection(9); arrayEditor.addView(this); editable.add(this)
+        }
+        fun append(token: String) {
+            val before = arrayAngles.text.toString().trim()
+            val after = if (before.isEmpty()) token else "$before,$token"
+            DirectionQueue.parse(after, DirectionQueue.ARRAY_PERIOD_MS)
+            arrayAngles.setText(after)
+        }
+        button("添加选中的原始角度") { append("${angle.value}*${repeat.selectedItemPosition + 1}") }
+        button("添加 WAIT / 零速度") { append("WAIT*${repeat.selectedItemPosition + 1}") }
+        button("清空角度 / 重新编排") { arrayAngles.setText("") }
+        button("使用 10 秒悬停预设") { arrayAngles.setText("WAIT*100") }
+        label("阵列 0° 轴的地理朝向（北 0°、东 90°、南 180°、西 270°）")
+        arrayZero = EditText(this).apply {
+            setText(prefs.getString("array_zero_v1", "0"))
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
+            arrayEditor.addView(this); editable.add(this)
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    if (::arrayVerified.isInitialized) arrayVerified.isChecked = false
+                }
+                override fun afterTextChanged(s: Editable?) = Unit
+            })
+        }
+        arrayRotation = Spinner(this).apply {
+            adapter = ArrayAdapter(this@AcousticLandingActivity, android.R.layout.simple_spinner_dropdown_item,
+                listOf("阵列角度顺时针增大", "阵列角度逆时针增大"))
+            setSelection(prefs.getInt("array_rotation_v1", 0).coerceIn(0, 1))
+            arrayEditor.addView(this); editable.add(this)
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    if (::arrayVerified.isInitialized) arrayVerified.isChecked = false
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
+        }
+        arrayTarget = CheckBox(this).apply {
+            text = "阵列中心与本次目标的水平位置重合（否则需要另加位置估计器）"
+            arrayEditor.addView(this); editable.add(this)
+            setOnCheckedChangeListener { _, _ -> if (::arrayVerified.isInitialized) arrayVerified.isChecked = false }
+        }
+        arrayVerified = CheckBox(this).apply {
+            text = "已核对角度零点、旋转方向和目标位置（实机前确认，不自动保存）"
+            arrayEditor.addView(this); editable.add(this)
+        }
+        arrayPreview = label("先选一个角度，点击下面按钮核对换算。0° 是一个方位，不代表到达。")
+        button("预览选中角度的换算（不会控制飞机）") {
+            val calibration = arrayCalibration()
+            val bearing = calibration.toArrayNorthBearing(angle.value.toDouble())
+            val movement = DirectionQueue.normalize(bearing + 180)
+            val source = DirectionQueue.parse(arrayAngles.text.toString(), DirectionQueue.ARRAY_PERIOD_MS)
+            arrayPreview.text = "选中原始角 ${angle.value}° → 音源地理方位 ${bearing}° → 向阵列修正方位 ${movement}°。\n" +
+                "已编辑 ${source.size()} 项 / ${source.durationMs() / 1000.0} 秒。\n" +
+                if (arrayTarget.isChecked) "以阵列中心为目标；启动前仍须核对标定。" else "目标原点尚未确认：仅可预览，不允许据此执行移动。"
+        }
     }
     private fun buildQueueEditor(settings: LinearLayout) {
         settings.addView(TextView(this).apply { text = "选择移动方向和时长，添加到队列；可删除、改时长和排序。" })
@@ -310,7 +421,15 @@ class AcousticLandingActivity : AppCompatActivity() {
         }
         render()
     }
-    private fun configuredController() = AcousticLandingController(Config(speed.text.toString().toDouble()), DirectionQueue.parse(plan.toText()))
+    private fun arrayMode() = ::inputMode.isInitialized && inputMode.selectedItemPosition == 1
+    private fun arrayCalibration() = ArrayAngleCalibration(arrayZero.text.toString().toDouble(), arrayRotation.selectedItemPosition == 0, arrayTarget.isChecked)
+    private fun configuredController(): AcousticLandingController {
+        val source = if (arrayMode()) {
+            check(!live.isChecked || arrayVerified.isChecked) { "实机使用阵列角度前，请核对并勾选角度标定确认" }
+            arrayCalibration().replay(arrayAngles.text.toString())
+        } else DirectionQueue.parse(plan.toText())
+        return AcousticLandingController(Config(speed.text.toString().toDouble()), source)
+    }
     private fun prepareStart() {
         if (active || bridge?.busy == true) return
         runCatching {
@@ -319,7 +438,7 @@ class AcousticLandingActivity : AppCompatActivity() {
                 check(sdk.lvRegisterState.value?.first == true) { "DJI SDK 尚未注册成功" }
                 check(ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) { "请先授予手机精确位置权限" }
                 check(adapter().snapshot.canStart) { "暂不能启动：${adapter().snapshot.detail}；先在地面确认右侧通信检查通过，再按手册手动起飞。" }
-                showConfirmation("开始实机序列", "确认已手动飞到目标上方并稳定悬停，遥控器摇杆回中。\n${c.total()} 项 / ${c.total() * 0.5} 秒，速度 ${c.config.speed} m/s。\n程序会按预设角度移动，结束后只悬停；不判断是否到达目标。") { begin(c, true) }
+                showConfirmation("开始实机序列", "确认已手动飞到目标上方并稳定悬停，遥控器摇杆回中。\n${c.total()} 项 / ${c.durationMs() / 1000.0} 秒，${c.periodMs()} ms/项，速度 ${c.config.speed} m/s。\n${if (arrayMode()) "使用阵列角度回放，零点 ${arrayZero.text}°；${arrayRotation.selectedItem}。\n" else ""}程序按预设角度移动，结束后只悬停；不判断是否到达目标。") { begin(c, true) }
             } else begin(c, false)
         }.onFailure { toast(it.message ?: "无法启动") }
     }
@@ -390,7 +509,9 @@ class AcousticLandingActivity : AppCompatActivity() {
         val name = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.ROOT).format(Date())
         val file = File(folder, "${if (liveSession) "live" else "simulation"}_$name.csv")
         log = PrintWriter(file); logPath = file.absolutePath
-        log!!.println("# mode=${if (liveSession) "live" else "simulation"}; queue=${plan.toText()}; speed=${c.config.speed}")
+        val sourceText = if (arrayMode()) arrayAngles.text.toString().replace('\n', ' ') else plan.toText()
+        log!!.println("# mode=${if (liveSession) "live" else "simulation"}; queue=$sourceText; speed=${c.config.speed}; input_period_ms=${c.periodMs()}; input_kind=${if (arrayMode()) "array_angle_replay" else "legacy_direction_queue"}")
+        if (arrayMode()) log!!.println("# array_zero_north_deg=${arrayZero.text}; clockwise=${arrayRotation.selectedItemPosition == 0}; target_at_array=${arrayTarget.isChecked}; bearing_column=converted_target_to_aircraft")
         log!!.println("monotonic_ms,state,deviation_deg,relative_altitude_m,yaw_deg,command_north_mps,command_east_mps,measured_horizontal_mps,battery_percent,positioning,samples_consumed,commanded_path_m,sim_north_m,sim_east_m")
     }
     private fun writeLog(now: Long) {
@@ -402,9 +523,13 @@ class AcousticLandingActivity : AppCompatActivity() {
     }
     private fun saveSettings() { getPreferences(MODE_PRIVATE).edit()
         .putString("queue_manual_v2", plan.toText()).putString("speed_manual_v2", speed.text.toString())
+        .putString("array_replay_v1", arrayAngles.text.toString()).putString("array_zero_v1", arrayZero.text.toString())
+        .putInt("array_rotation_v1", arrayRotation.selectedItemPosition)
         .putString("yaw_manual_v2", yaw.text.toString()).apply() }
     private fun render() {
         if (!::status.isInitialized) return
+        legacyEditor.visibility = if (arrayMode()) View.GONE else View.VISIBLE
+        arrayEditor.visibility = if (arrayMode()) View.VISIBLE else View.GONE
         val busy = active || bridge?.busy == true
         editable.forEach { it.isEnabled = !busy }
         queueButtons.forEach { (view, allowed) -> view.isEnabled = !busy && allowed }
@@ -439,7 +564,8 @@ class AcousticLandingActivity : AppCompatActivity() {
         val modeLabel = if (bridge?.busy == true) "实机控制或交接处理中" else if (live.isChecked) "实机模式" else "本地模拟模式"
         status.text = "$modeLabel\nSDK：$registerStatus\n状态：${shown.state}\n$message\n${shown.detail}\n" +
             preflight + telemetry + "飞行模式：${shown.flightMode}\n队列：${shown.consumed} / ${shown.total}\n" +
-            "输入：${shown.bearing ?: "WAIT / 队列结束"}\n水平命令 N/E：%.2f / %.2f m/s\n".format(shown.command.north, shown.command.east) +
+            "输入模式：${if (arrayMode()) "阵列角度回放 / 100 ms（不是网络接收）" else "原有队列 / 500 ms"}\n" +
+            "换算后目标偏离角：${shown.bearing ?: "WAIT / 队列结束"}\n水平命令 N/E：%.2f / %.2f m/s\n".format(shown.command.north, shown.command.east) +
             "累计指令路程：%.2f m（不是实测距离）\n".format(shown.commandedPath) +
             (if (shown.flightMode == "LOCAL_SIMULATION") "模拟 N/E：%.2f / %.2f m\n".format(simNorth, simEast) else "实机无位置轨迹；移动终点须目视判断。\n") +
             "队列结束不会自动降落。紧急制动会终止本次队列并交还遥控器。\n日志：$logPath\n\n逐项遥测诊断：\n" +

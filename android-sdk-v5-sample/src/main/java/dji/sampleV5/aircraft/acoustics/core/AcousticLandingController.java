@@ -53,6 +53,7 @@ public final class AcousticLandingController {
 
     public final Config config;
     private final DirectionQueue queue;
+    private final LiveBearingInput liveInput;
     private State state = State.IDLE;
     private String reason = "尚未控制无人机";
     private long startedAt, lastTick, stationarySince = -1;
@@ -63,15 +64,23 @@ public final class AcousticLandingController {
     public AcousticLandingController(Config config, DirectionQueue queue) {
         if (config == null || queue == null || queue.consumed() != 0)
             throw new IllegalArgumentException("每次实验必须使用新的队列");
-        if (queue.movingSamples() * DirectionQueue.PERIOD_MS / 1000.0 * config.speed > MAX_PATH + 1e-9)
+        if (queue.movingSamples() * queue.periodMs() / 1000.0 * config.speed > MAX_PATH + 1e-9)
             throw new IllegalArgumentException("预计水平指令路程超过 3 米，请缩短队列或降低速度");
-        this.config = config; this.queue = queue;
+        this.config = config; this.queue = queue; this.liveInput = null;
+    }
+    /** Reserved for the transport adapter once the actual wire format is agreed. */
+    public AcousticLandingController(Config config, LiveBearingInput liveInput) {
+        if (config == null || liveInput == null) throw new IllegalArgumentException("实时输入配置缺失");
+        this.config = config; this.liveInput = liveInput; this.queue = null;
     }
     public State state() { return state; }
     public String reason() { return reason; }
     public Double bearing() { return bearing; }
-    public int consumed() { return queue.consumed(); }
-    public int total() { return queue.size(); }
+    public int consumed() { return queue == null ? liveInput.accepted() : queue.consumed(); }
+    public int total() { return queue == null ? -1 : queue.size(); }
+    public long periodMs() { return queue == null ? LiveBearingInput.PERIOD_MS : queue.periodMs(); }
+    public long durationMs() { return queue == null ? LiveBearingInput.MAX_SESSION_MS : queue.durationMs(); }
+    public int skippedSamples() { return queue == null ? 0 : queue.skipped(); }
     public double initialAltitude() { return initialAltitude; }
     public double commandedPath() { return commandedPath; }
     public boolean controlling() { return state == State.RUNNING || state == State.HOVERING; }
@@ -82,8 +91,11 @@ public final class AcousticLandingController {
         if (issue != null) throw new IllegalStateException(issue);
         if (t.battery < 30) throw new IllegalStateException("启动要求电量至少 30%");
         if (!stationary(t)) throw new IllegalStateException("请先手动稳定悬停，水平/垂直速度须不超过 0.2 m/s");
+        if (liveInput != null && !liveInput.readyForStart(now))
+            throw new IllegalStateException("启动前尚无新鲜有效阵列角度，请先验证接收链路");
         startedAt = lastTick = now;
         initialAltitude = t.altitude;
+        if (liveInput != null) liveInput.start(now);
         state = State.RUNNING;
         reason = "正在执行有限方向序列；保持高度";
     }
@@ -106,8 +118,9 @@ public final class AcousticLandingController {
         commandedPath += lastCommand.magnitude() * (now - lastTick) / 1000.0;
         if (commandedPath > MAX_PATH + 0.1) return fail("累计指令路程超限");
         lastTick = now;
-        long slot = (now - startedAt) / DirectionQueue.PERIOD_MS;
-        if (state == State.RUNNING && slot >= queue.size()) {
+        long slot = (now - startedAt) / periodMs();
+        if (state == State.RUNNING && queue != null && slot >= queue.size()) {
+            if (queue.periodMs() == DirectionQueue.ARRAY_PERIOD_MS) queue.discardBefore(queue.size());
             state = State.HOVERING; bearing = null;
             reason = "队列结束，持续零速度悬停；等待人工决定降落或交还遥控器";
         }
@@ -116,8 +129,19 @@ public final class AcousticLandingController {
             else stationarySince = -1;
             return lastCommand = Command.ZERO;
         }
-        if (slot >= queue.consumed()) {
-            if (slot != queue.consumed()) return fail("方向调度跳过采样，禁止追赶或续播");
+        if (liveInput != null) {
+            LiveBearingInput.Reading reading = liveInput.poll(now);
+            if (reading.status == LiveBearingInput.Status.FAULT) return fail(reading.reason);
+            if (reading.status == LiveBearingInput.Status.FINISHED) {
+                state = State.HOVERING; bearing = null; reason = reading.reason;
+                return lastCommand = Command.ZERO;
+            }
+            bearing = reading.targetBearing; reason = reading.reason;
+        } else if (slot >= queue.consumed()) {
+            if (slot != queue.consumed()) {
+                if (queue.periodMs() != DirectionQueue.ARRAY_PERIOD_MS) return fail("方向调度跳过采样，禁止追赶或续播");
+                queue.discardBefore((int) slot);
+            }
             bearing = queue.next();
         }
         if (bearing == null) return lastCommand = Command.ZERO;
@@ -145,6 +169,7 @@ public final class AcousticLandingController {
     public void abort(String detail) {
         if (state == State.COMPLETE) return;
         state = State.ABORTED; reason = detail; bearing = null; lastCommand = Command.ZERO;
+        if (liveInput != null) liveInput.fail(detail);
     }
     private Command fail(String detail) { abort(detail); return Command.ZERO; }
     public static boolean fresh(long now, Telemetry t) {
