@@ -4,6 +4,12 @@
 
 从安装开发工具到手机操作，请先阅读 **[完整新手操作手册](docs/operation-manual.md)**。实验顺序与验收表见 [实验步骤](docs/experiment-guide.md)，审查结果见 [安全审查与验证范围](docs/safety-review.md)。
 
+## VoiceSep 只读联调（v1.4）
+
+VoiceSep 已独立部署到同级 `VoiceSep/`，原仓库源码保持干净。新增桥接集中在 `scripts/voicesep/`，只调用原 `GET /api/state`；Mac 采集/测角页保持回环监听，手机通过局域网只读网关接收角度。Android 新增“阵列实时角度”独立页面，无需连接无人机，支持有效性、新鲜度、去重与自动跟随 `configured_update_ms`。
+
+默认128ms来自算法参数，不在手机写死。已有100ms回放和500ms旧队列保留。完整部署、接口位置、接线与无无人机/无阵列测试方法见 **[Mac与手机联调指南](docs/voicesep-mac-integration.md)**。由于尚无采集端同步时间戳，本轮网络结果只用于观察，没有直接启用实时飞控。
+
 ## 阵列联调准备（v1.3）
 
 原版已保存为 [v1.2-pre-array-20261119](https://github.com/zhengthirteen/DJI-acoustics-autolanding-android/tree/v1.2-pre-array-20261119)，对应 `6c510d8`。本版保留已验证的 DJI 连接/遥测/飞控适配器、SDK 和原有 0.5 秒队列，新增 **0.1 秒/项、任意角度的阵列回放**。支持 1° 滚轮、文本小数角、零点朝向与顺逆时针校准。
@@ -47,7 +53,7 @@ cp -n secrets.properties.example secrets.properties
 ./gradlew :sample:assembleDebug
 ```
 
-APK：`android-sdk-v5-sample/build/outputs/apk/debug/sample-debug.apk`。版本为 1.3 / versionCode 4。原 v1.2 安装包本机备份在忽略的 `artifacts/baselines/v1.2-pre-array-20261119/`。
+APK：`android-sdk-v5-sample/build/outputs/apk/debug/sample-debug.apk`。版本为 1.4 / versionCode 5。原 v1.2 安装包本机备份在忽略的 `artifacts/baselines/v1.2-pre-array-20261119/`。
 
 Key 保存在 Git 忽略的 `android-sdk-v5-as/secrets.properties`。仓库默认包名 `com.zheng13.acousticslanding`；本机按用户要求复用旧 Key，实际包名为 `com.zheng13.gradproject`。同一包名不能与原视觉 App 并存；签名不同会拒绝覆盖，处理方式见 [API Key 指南](docs/api-key-setup.md)。原毕设源目录独立保留。
 
@@ -58,6 +64,8 @@ Key 保存在 Git 忽略的 `android-sdk-v5-as/secrets.properties`。仓库默�
 ```
 
 当前通过原 37 组 JVM 场景、新 18 组阵列输入场景，以及 30 组适配器主机替身场景。新增覆盖 100 ms 回放、调度抖动、任意角度标定、最新帧缓冲、断流/迟到锁存与人工结束输入。Android 编译和主机测试不等于实机验证；用户已确认原版连接/移动/降落正常，本次新增阵列功能尚待设备复测。
+
+v1.4 另通过11组只读监视场景、5组网关测试和两种周期的合成音频全链路测试；详见联调指南的验证范围。
 
 ## 目录与来源
 

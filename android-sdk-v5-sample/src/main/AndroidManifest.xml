@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     package="dji.sampleV5.aircraft">
+
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
@@ -25,6 +28,8 @@
         android:supportsRtl="true"
         android:requestLegacyExternalStorage="true"
         android:extractNativeLibs="true"
+        android:usesCleartextTraffic="true"
+        tools:replace="android:usesCleartextTraffic"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
 
         <meta-data
@@ -48,6 +53,12 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Read-only LAN viewer; its client restricts HTTP to private/loopback IPs. -->
+        <activity
+            android:name="dji.sampleV5.aircraft.acoustics.monitor.VoiceSepMonitorActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
 
         <activity
             android:name="dji.sampleV5.aircraft.DJIAircraftMainActivity"

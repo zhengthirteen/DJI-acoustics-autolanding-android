@@ -3,6 +3,7 @@ package dji.sampleV5.aircraft.acoustics
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
@@ -23,6 +24,7 @@ import dji.sampleV5.aircraft.acoustics.core.AcousticLandingController.*
 import dji.sampleV5.aircraft.acoustics.core.DirectionQueue
 import dji.sampleV5.aircraft.acoustics.core.DirectionPlan
 import dji.sampleV5.aircraft.acoustics.core.ArrayAngleCalibration
+import dji.sampleV5.aircraft.acoustics.monitor.VoiceSepMonitorActivity
 import dji.sampleV5.aircraft.models.MSDKManagerVM
 import dji.sampleV5.aircraft.models.globalViewModels
 import java.io.File
@@ -167,6 +169,12 @@ class AcousticLandingActivity : AppCompatActivity() {
             settings.addView(this); editable.add(this)
         }
         label("声学方向序列实验 · 人工决定降落").textSize = 20f
+        Button(this).apply {
+            text = "阵列实时角度（只读，不接无人机也可）"; settings.addView(this); editable.add(this)
+            setOnClickListener {
+                if (!active && bridge?.busy != true) startActivity(Intent(this@AcousticLandingActivity, VoiceSepMonitorActivity::class.java))
+            }
+        }
         label("原队列：0.5 秒/项。阵列角度回放：0.1 秒/项；先核对阵列零点与顺逆时针。")
         live = CheckBox(this).apply { text = "实机模式（每次进入默认关闭）"; settings.addView(this) }
         editable.add(live)
@@ -238,7 +246,7 @@ class AcousticLandingActivity : AppCompatActivity() {
             text = "复制诊断信息"
             actions.addView(this, LinearLayout.LayoutParams(0, -2, 1f))
             setOnClickListener {
-                val report = "App 1.3 / $packageName\n${communication.text}\n${bridge?.snapshot?.diagnostics?.joinToString("\n") ?: "尚无字段诊断"}\n${status.text}"
+                val report = "App 1.4 / $packageName\n${communication.text}\n${bridge?.snapshot?.diagnostics?.joinToString("\n") ?: "尚无字段诊断"}\n${status.text}"
                 (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(
                     ClipData.newPlainText("DJI 通信诊断", report.replace(Regex("[0-9a-fA-F]{24}"), "[标识已隐藏]")))
                 toast("诊断信息已复制；不包含配置文件中的 API Key")

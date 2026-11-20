@@ -1,0 +1,19 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VoiceSep 只读角度</title><style>
+:root{color-scheme:dark}body{margin:0;background:#0c1723;color:#e8eef6;font:16px system-ui,sans-serif}main{max-width:700px;margin:auto;padding:24px}h1{font-size:24px}.badge{display:inline-block;background:#17372f;color:#8be6bd;border-radius:16px;padding:5px 12px}.card{background:#142536;border:1px solid #284158;border-radius:20px;padding:20px;margin:16px 0}#angle{font-size:64px;font-weight:700;text-align:center}#source,#reason{text-align:center;color:#adc0d2;overflow-wrap:anywhere}svg{display:block;max-width:320px;margin:10px auto}#metrics{white-space:pre-wrap;line-height:1.8;font:14px ui-monospace,monospace}small{color:#adc0d2;line-height:1.7}a{color:#8bd1ff}</style>
+<main><span class="badge">只读 · 不发送飞行指令</span><h1>声音来自哪个方向？</h1><p>阵列 +x 为 0°，+y 为 90°，逆时针增加。这里显示声源方向。</p>
+<div class="card"><div id="source">等待 VoiceSep</div><div id="angle">—</div><div id="reason">连接中</div>
+<svg viewBox="0 0 300 300" aria-label="声源方位罗盘"><circle cx="150" cy="150" r="105" stroke="#365168" stroke-width="2" fill="none"/><path d="M45 150H255M150 45V255" stroke="#365168"/><g fill="#b2c9dc" text-anchor="middle" font-size="14"><text x="150" y="28">+y · 90°</text><text x="275" y="155">0°</text><text x="24" y="155">180°</text><text x="150" y="286">270°</text></g><g id="pointer" visibility="hidden"><path d="M150 150H235" stroke="#65d7aa" stroke-width="6"/><path d="M240 150L221 138V162Z" fill="#65d7aa"/></g><circle cx="150" cy="150" r="6" fill="#b2c9dc"/></svg></div>
+<div class="card" id="metrics">尚无数据</div><small>本页不要求连接无人机。VoiceSep 的有效结果来自电脑正在处理的音轨；音轨可能是真实采集或合成测试，需在电脑端确认。暂无采集端同步时间戳，不能把本页用于证明飞控时延安全。</small></main>
+<script>
+const $=id=>document.getElementById(id);let errorText='',period=128,lastKey='',lastUnique=-Infinity,lastResponse=-Infinity,frame=null;
+const number=v=>Number.isFinite(v)?v.toFixed(1):'—';
+function render(){const now=performance.now(),age=frame?Math.max(now-lastUnique,(frame.result_age_ms??Infinity)+(frame.gateway_fetch_ms??0)+(now-lastResponse)):Infinity;
+const ok=frame&&frame.active&&frame.valid&&frame.upstream_ok&&age<=Math.max(300,3*period)&&now-lastResponse<=Math.max(1000,5*period);
+$('angle').textContent=ok?`${number(frame.azimuth_deg)}°`:'—';$('pointer').setAttribute('visibility',ok?'visible':'hidden');if(ok)$('pointer').setAttribute('transform',`rotate(${-frame.azimuth_deg} 150 150)`);
+$('source').textContent=frame?.source==='synthetic_audio'?'合成13路音频经VoiceSep测角（无真实阵列）':frame?.source==='demo'?'合成角度演示（不是声音测角）':'VoiceSep 算法输出（采集来源由电脑确认）';
+$('reason').textContent=ok?'有效声源方向':frame?.reason||errorText||'尚未接收角度';if(frame?.valid&&!ok)$('reason').textContent='角度已过期，已清除箭头';
+if(frame)$('metrics').textContent=`配置周期：${number(period)} ms\n上游实际更新：${number(frame.update_hz)} Hz\n结果年龄上界：${number(age)} ms\n文件积压：${number(frame.backlog_ms)} ms\n输入更新时间：${number(frame.input_age_ms)} ms 前\nrun / epoch / seq：${frame.run_id??'—'} / ${frame.epoch} / ${frame.sequence}`;}
+async function poll(){try{const response=await fetch('/api/state',{cache:'no-store',signal:AbortSignal.timeout(2500)});if(!response.ok)throw Error('HTTP '+response.status);const data=await response.json();if(data.protocol!=='voicesep-angle-v1'||data.read_only!==true)throw Error('接口不匹配');const key=`${data.run_id}/${data.epoch}/${data.sequence}`;if(key!==lastKey){lastUnique=performance.now();lastKey=key;}errorText='';frame=data;lastResponse=performance.now();if(Number.isFinite(data.configured_update_ms)&&data.configured_update_ms>=5&&data.configured_update_ms<=5000)period=data.configured_update_ms;}catch(error){frame=null;errorText='连接失败：'+error.message;$('reason').textContent=errorText;$('metrics').textContent='检查电脑服务、同一局域网和防火墙。';}render();setTimeout(poll,Math.max(50,Math.min(500,period/2)));}
+setInterval(render,100);poll();
+</script></html>
