@@ -16,5 +16,6 @@ jobs:
       - run: python3 -B scripts/voicesep/test_mac_compat.py
       - run: python3 -B scripts/voicesep/test_local_credentials.py
       - run: python3 -B scripts/voicesep/test_stack.py
+      - run: python3 -B scripts/voicesep/test_diagnostics.py
       - run: ./gradlew :sample:testAcousticBridge
         working-directory: android-sdk-v5-as

@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.request import ProxyHandler, build_opener
 
+from diagnostics import diagnose
 from local_credentials import CredentialsError, load_into_smd
 
 PROJECT = Path(__file__).resolve().parents[2]
@@ -361,7 +362,7 @@ def stop():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=("start", "status", "stop", "load-credentials")
+        "action", choices=("start", "status", "stop", "load-credentials", "diagnose")
     )
     parser.add_argument(
         "--voicesep-root", type=Path, default=PROJECT.parent / "VoiceSep"
@@ -374,6 +375,8 @@ def main():
     elif args.action == "load-credentials":
         if not load_credentials():
             raise SystemExit(1)
+    elif args.action == "diagnose":
+        diagnose()
     else:
         status()
 

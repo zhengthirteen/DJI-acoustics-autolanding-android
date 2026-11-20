@@ -6,6 +6,9 @@
 # 在 Android 项目根目录执行
 python3 scripts/voicesep/stack.py start
 python3 scripts/voicesep/stack.py status
+python3 scripts/voicesep/stack.py diagnose
+# 连续观察状态变化；只读，不会触发校准或采样
+python3 -B scripts/voicesep/diagnostics.py --watch 90
 # 原服务单独重启后，只重新加载本机凭据
 python3 scripts/voicesep/stack.py load-credentials
 # 实验结束并在原页面停止采集/分析后
