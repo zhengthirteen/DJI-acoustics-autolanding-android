@@ -15,4 +15,5 @@
 - Keep the emergency brake permanently accessible, including confirmation dialogs. Invalidate the session immediately, cancel this app's landing request, command zero and relinquish authority. No queue resume after a stop; do not send motor-stop commands.
 - Run actual flight control on its dedicated worker, with a latched UI heartbeat watchdog. Late callbacks or heartbeats must never restart a stopped session. Keep uncertain SDK operations blocking a new session.
 - API keys and signing credentials belong only in ignored `android-sdk-v5-as/secrets.properties`. Do not copy secrets from the old project or commit APKs, recordings, logs or local SDK paths.
+- Local SMD device credentials use SMD_SSH_* in the same ignored, owner-only properties file. Load through the original loopback credentials API; never echo, package or forward the password to the phone. Credential loading must not start sampling or change VoiceSep source.
 - Validate controller changes with `./scripts/test_acoustics.sh`; validate Android changes with `./gradlew :sample:assembleDebug` in the Gradle directory. Report separately what is compiled, simulated and verified on an actual aircraft.

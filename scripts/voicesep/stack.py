@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from urllib.request import ProxyHandler, build_opener
 
+from local_credentials import CredentialsError, load_into_smd
+
 PROJECT = Path(__file__).resolve().parents[2]
 STATE_DIR = PROJECT / "artifacts" / "voicesep-stack"
 STATE_FILE = STATE_DIR / "processes.json"
@@ -75,6 +77,10 @@ def wait_ready(port, route, process):
 
 def start(root):
     previous = read_state()
+    if len(previous) == 3 and all(ours(item) for item in previous):
+        load_credentials()
+        status()
+        return
     if any(ours(item) for item in previous):
         raise RuntimeError(
             "This stack is already running; use status. No existing service was stopped."
@@ -172,7 +178,18 @@ def start(root):
             if ours(entry):
                 os.kill(entry["pid"], signal.SIGTERM)
         raise
+    load_credentials()
     status()
+
+
+def load_credentials():
+    try:
+        loaded, message = load_into_smd()
+        print(message)
+    except CredentialsError as error:
+        print(str(error), file=sys.stderr)
+        return False
+    return loaded
 
 
 def status():
@@ -216,7 +233,9 @@ def stop():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("start", "status", "stop"))
+    parser.add_argument(
+        "action", choices=("start", "status", "stop", "load-credentials")
+    )
     parser.add_argument(
         "--voicesep-root", type=Path, default=PROJECT.parent / "VoiceSep"
     )
@@ -225,6 +244,9 @@ def main():
         start(args.voicesep_root.resolve())
     elif args.action == "stop":
         stop()
+    elif args.action == "load-credentials":
+        if not load_credentials():
+            raise SystemExit(1)
     else:
         status()
 
