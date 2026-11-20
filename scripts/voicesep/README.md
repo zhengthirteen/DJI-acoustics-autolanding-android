@@ -14,6 +14,8 @@ python3 scripts/voicesep/stack.py stop
 
 Mac服务为8012采集、8011测角、8014只读网关。只读网关的上游固定为本机HTTP源，手机只获得角度元数据，没有录音、启动/停止或改参数的接口。
 
+进程身份使用完整命令行与UTC启动时间戳，兼容已验证的旧英文/中文记录；不受终端语言和TZ变量影响。重复start会复用已有服务，status把未通过身份核对的监听进程显示为listening-unverified，不会误报为stopped或擅自结束它。
+
 ```bash
 # 完整合成音频链路，无真实阵列/无人机；手机访问 MacIP:18014
 python3 -B scripts/voicesep/audio_demo.py --seconds 120 --angle 45 --hop 256 --step 8

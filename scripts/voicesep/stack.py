@@ -4,13 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.request import ProxyHandler, build_opener
 
@@ -19,30 +23,127 @@ from local_credentials import CredentialsError, load_into_smd
 PROJECT = Path(__file__).resolve().parents[2]
 STATE_DIR = PROJECT / "artifacts" / "voicesep-stack"
 STATE_FILE = STATE_DIR / "processes.json"
+SERVICES = {"smd": 8012, "direction": 8011, "gateway": 8014}
+MONTHS = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+]
+
+
+def process_field(pid, field, *, utc=False):
+    if type(pid) is not int or pid <= 0:
+        return ""
+    environment = os.environ.copy()
+    # ps date text is locale-dependent; terminal language must not change ownership.
+    environment["LC_ALL"] = "C"
+    environment["LANG"] = "C"
+    if utc:
+        environment["TZ"] = "UTC"
+    else:
+        environment.pop("TZ", None)
+    return subprocess.run(
+        ["ps", "-ww", "-p", str(pid), "-o", field + "="],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    ).stdout.strip()
 
 
 def command(pid):
-    return subprocess.run(
-        ["ps", "-p", str(pid), "-o", "command="],
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout.strip()
+    return process_field(pid, "command")
 
 
 def created(pid):
-    return subprocess.run(
-        ["ps", "-p", str(pid), "-o", "lstart="],
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout.strip()
+    return process_field(pid, "lstart")
+
+
+def date_parts(text):
+    """Read existing English/Chinese records without changing Python's locale."""
+    try:
+        fields = text.split()
+        if len(fields) == 5 and fields[1] in MONTHS:
+            _, month, day, clock, year = fields
+            month = MONTHS.index(month) + 1
+        elif len(fields) == 4 and re.fullmatch(r"\d+月/\d+", fields[1]):
+            _, month_day, clock, year = fields
+            month, day = month_day.replace("月", "").split("/")
+        else:
+            return None
+        hour, minute, second = map(int, clock.split(":"))
+        value = datetime(int(year), int(month), int(day), hour, minute, second)
+        return value
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def started_epoch(pid):
+    value = date_parts(process_field(pid, "lstart", utc=True))
+    return calendar.timegm(value.timetuple()) if value else None
 
 
 def ours(item):
-    return created(item["pid"]) == item["created"] and item["marker"] in command(
-        item["pid"]
+    pid = item.get("pid")
+    marker = item.get("marker")
+    if type(pid) is not int or pid <= 0 or not isinstance(marker, str) or not marker:
+        return False
+    if "started_epoch_utc" in item:
+        expected = item["started_epoch_utc"]
+        same_start = type(expected) is int and expected == started_epoch(pid)
+    else:
+        # Migrate only an already-verified legacy identity, never just an occupied port.
+        expected = date_parts(item.get("created"))
+        same_start = expected is not None and expected == date_parts(created(pid))
+    return same_start and marker in command(pid)
+
+
+def listening_pids(port):
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    return sorted(
+        {int(line) for line in result.stdout.splitlines() if line.isdecimal()}
     )
+
+
+def save_state(entries):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w", dir=STATE_DIR, prefix="processes-", suffix=".tmp", delete=False
+    ) as output:
+        temporary = Path(output.name)
+        output.write(json.dumps(entries, indent=2))
+    try:
+        temporary.replace(STATE_FILE)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def upgrade_identities(entries):
+    result = [dict(entry) for entry in entries]
+    for entry in result:
+        if "started_epoch_utc" not in entry and ours(entry):
+            epoch = started_epoch(entry["pid"])
+            if epoch is not None:
+                entry["started_epoch_utc"] = epoch
+    if result != entries:
+        save_state(result)
 
 
 def occupied(port):
@@ -56,7 +157,13 @@ def occupied(port):
 
 
 def read_state():
-    return json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else []
+    entries = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else []
+    if not isinstance(entries, list) or any(
+        not isinstance(item, dict) or item.get("name") not in SERVICES
+        for item in entries
+    ):
+        raise RuntimeError("进程记录格式异常，未接管或停止任何服务。")
+    return entries
 
 
 def wait_ready(port, route, process):
@@ -78,6 +185,8 @@ def wait_ready(port, route, process):
 def start(root):
     previous = read_state()
     if len(previous) == 3 and all(ours(item) for item in previous):
+        upgrade_identities(previous)
+        print("三个服务已在运行，已复用；没有关闭或重启进程。")
         load_credentials()
         status()
         return
@@ -89,9 +198,14 @@ def start(root):
     if not python.exists():
         raise RuntimeError("Create VoiceSep/.venv and install requirements.txt first")
     ports = (8012, 8011, 8014)
-    if any(occupied(port) for port in ports):
+    conflicts = [port for port in ports if occupied(port)]
+    if conflicts:
+        details = "; ".join(
+            f"端口 {port}，监听 PID {listening_pids(port) or '未知'}"
+            for port in conflicts
+        )
         raise RuntimeError(
-            "A required port is already occupied; no process was stopped"
+            f"{details}。端口已占用但未通过本工具进程身份核对；请运行 status 查看。未结束任何进程。"
         )
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     specs = [
@@ -170,8 +284,11 @@ def start(root):
                 "marker": str(root / "research/SMD") if name == "smd" else args[2],
                 "port": port,
             }
+            epoch = started_epoch(process.pid)
+            if epoch is not None:
+                entry["started_epoch_utc"] = epoch
             entries.append(entry)
-            STATE_FILE.write_text(json.dumps(entries, indent=2))
+            save_state(entries)
             wait_ready(port, route, process)
     except Exception:
         for entry in reversed(entries):
@@ -193,10 +310,20 @@ def load_credentials():
 
 
 def status():
-    for item in read_state():
-        print(
-            f"{item['name']}: {'running' if ours(item) else 'stopped'} (PID {item['pid']}, port {item['port']})"
-        )
+    entries = {item["name"]: item for item in read_state()}
+    for name, port in SERVICES.items():
+        item = entries.get(name)
+        if item is not None and ours(item):
+            description = f"running (PID {item['pid']}, port {port})"
+        elif occupied(port):
+            description = f"listening-unverified (port {port}, listening PID {listening_pids(port) or 'unknown'})"
+        else:
+            description = f"stopped (port {port})"
+        print(f"{name}: {description}")
+    print_endpoints()
+
+
+def print_endpoints():
     print("Mac acquisition: http://127.0.0.1:8012")
     print("Mac direction:   http://127.0.0.1:8011")
     print("Read-only view:  http://127.0.0.1:8014")
@@ -252,4 +379,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (RuntimeError, OSError, ValueError) as error:
+        print(f"操作未完成：{error}", file=sys.stderr)
+        raise SystemExit(1) from None
